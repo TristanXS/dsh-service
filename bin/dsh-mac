@@ -691,7 +691,7 @@ read_activation() {
     die 'read_activation accepts at most one path'
     return 1
   }
-  [ -r "$activation_path" ] || {
+  [ -f "$activation_path" ] && [ ! -L "$activation_path" ] && [ -r "$activation_path" ] || {
     die "cannot read activation: $activation_path"
     return 1
   }
@@ -769,6 +769,276 @@ read_activation() {
   ACTIVATION_SCHEMA_VERSION=$activation_schema
   ACTIVATION_OLD_RELEASE=$activation_old_release
   ACTIVATION_CANDIDATE_RELEASE=$activation_candidate_release
+}
+
+write_activation() {
+  [ "$#" -eq 2 ] || {
+    die 'write_activation requires old and candidate release IDs'
+    return 1
+  }
+  local old_release candidate_release activation_tmp
+  old_release=$1
+  candidate_release=$2
+  activation_tmp="$ACTIVATION_FILE.tmp.$$"
+
+  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
+    die 'manager root is unavailable for activation journal'
+    return 1
+  }
+  if [ -L "$ACTIVATION_FILE" ] ||
+    { [ -e "$ACTIVATION_FILE" ] && [ ! -f "$ACTIVATION_FILE" ]; }; then
+    die 'activation journal path is unsafe'
+    return 1
+  fi
+  if [ -e "$activation_tmp" ] || [ -L "$activation_tmp" ]; then
+    die 'activation journal temporary path already exists'
+    return 1
+  fi
+
+  if ! (
+    umask 077
+    {
+      printf 'SCHEMA_VERSION=1\n'
+      printf 'OLD_RELEASE=%s\n' "$old_release"
+      printf 'CANDIDATE_RELEASE=%s\n' "$candidate_release"
+    } >"$activation_tmp"
+  ); then
+    [ ! -L "$activation_tmp" ] && /bin/rm -f -- "$activation_tmp"
+    die 'could not write activation journal'
+    return 1
+  fi
+  if ! read_activation "$activation_tmp" ||
+    [ "$ACTIVATION_OLD_RELEASE" != "$old_release" ] ||
+    [ "$ACTIVATION_CANDIDATE_RELEASE" != "$candidate_release" ]; then
+    /bin/rm -f -- "$activation_tmp"
+    die 'activation journal failed validation'
+    return 1
+  fi
+  if ! /bin/mv -f "$activation_tmp" "$ACTIVATION_FILE"; then
+    /bin/rm -f -- "$activation_tmp"
+    die 'could not publish activation journal'
+    return 1
+  fi
+}
+
+release_link_id() {
+  [ "$#" -eq 1 ] || return 1
+  local link_path link_target link_id
+  link_path=$1
+  case "$link_path" in
+    "$CURRENT_LINK"|"$PREVIOUS_LINK") ;;
+    *) return 1 ;;
+  esac
+  [ -L "$link_path" ] || return 1
+  link_target=$(/usr/bin/readlink "$link_path") || return 1
+  case "$link_target" in
+    releases/*) link_id=${link_target#releases/} ;;
+    *) return 1 ;;
+  esac
+  validate_release_id "$link_id" || return 1
+  release_dir_is_owned "$RELEASES_DIR/$link_id" || return 1
+  printf '%s\n' "$link_id"
+}
+
+previous_release_id() {
+  [ "$#" -eq 0 ] || return 1
+  release_link_id "$PREVIOUS_LINK"
+}
+
+remove_activation_journal() {
+  [ "$#" -eq 0 ] || return 1
+  [ -f "$ACTIVATION_FILE" ] && [ ! -L "$ACTIVATION_FILE" ] || {
+    die 'activation journal is unavailable for removal'
+    return 1
+  }
+  /bin/rm -f -- "$ACTIVATION_FILE" || {
+    die 'could not remove activation journal'
+    return 1
+  }
+}
+
+remove_owned_release() {
+  [ "$#" -eq 1 ] || return 1
+  local release_id release_path
+  release_id=$1
+  validate_release_id "$release_id" || return 1
+  release_path="$RELEASES_DIR/$release_id"
+  release_dir_is_owned "$release_path" || return 1
+  /bin/rm -rf -- "$release_path"
+}
+
+prune_releases() {
+  [ "$#" -eq 0 ] || return 1
+  local current_id previous_id child child_id child_physical child_parent
+  [ -n "${RELEASES_DIR:-}" ] || {
+    die 'releases directory must not be empty'
+    return 1
+  }
+  release_root_is_owned || {
+    die 'releases directory is not manager-owned'
+    return 1
+  }
+
+  current_id=
+  if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ]; then
+    current_id=$(current_release_id) || {
+      die 'current release link is invalid'
+      return 1
+    }
+  fi
+  previous_id=
+  if [ -e "$PREVIOUS_LINK" ] || [ -L "$PREVIOUS_LINK" ]; then
+    previous_id=$(previous_release_id) || {
+      die 'previous release link is invalid'
+      return 1
+    }
+  fi
+
+  for child in "$RELEASES_DIR"/*; do
+    [ -e "$child" ] || [ -L "$child" ] || continue
+    child_id=${child##*/}
+    validate_release_id "$child_id" || continue
+    [ -d "$child" ] && [ ! -L "$child" ] || continue
+    [ "$child_id" != "$current_id" ] && [ "$child_id" != "$previous_id" ] || continue
+    child_physical=$(CDPATH= cd -P -- "$child" && pwd) || return 1
+    child_parent=$(CDPATH= cd -P -- "$child_physical/.." && pwd) || return 1
+    [ "$child_parent" = "$owned_releases_physical" ] || {
+      die 'release candidate is outside the releases directory'
+      return 1
+    }
+    /bin/rm -rf -- "$child" || return 1
+  done
+}
+
+rollback_activation() {
+  [ "$#" -eq 2 ] || return 1
+  local old_release candidate_release linked_release
+  old_release=$1
+  candidate_release=$2
+  validate_release_id "$candidate_release" || return 1
+
+  if [ "$old_release" = NONE ]; then
+    stop_service || return 1
+    service_loaded && {
+      die 'LaunchAgent is still loaded after failed first install'
+      return 1
+    }
+    linked_release=$(current_release_id) || return 1
+    [ "$linked_release" = "$candidate_release" ] || return 1
+    /bin/rm -f -- "$CURRENT_LINK" || return 1
+    remove_owned_release "$candidate_release" || return 1
+    remove_activation_journal || return 1
+    return 0
+  fi
+
+  validate_release_id "$old_release" || return 1
+  atomic_release_link "$CURRENT_LINK" "$old_release" || return 1
+  restart_service || return 1
+  wait_for_health || return 1
+  remove_activation_journal || return 1
+  remove_owned_release "$candidate_release" || return 1
+  prune_releases
+}
+
+resume_activation() {
+  [ "$#" -eq 3 ] || return 1
+  local old_release candidate_release current_state
+  old_release=$1
+  candidate_release=$2
+  current_state=$3
+
+  if [ "$old_release" != NONE ]; then
+    atomic_release_link "$PREVIOUS_LINK" "$old_release" || return 1
+  fi
+  if [ "$current_state" != "$candidate_release" ]; then
+    atomic_release_link "$CURRENT_LINK" "$candidate_release" || return 1
+  fi
+
+  if [ "$old_release" = NONE ] && [ "$current_state" = NONE ]; then
+    if ! start_service || ! wait_for_health; then
+      rollback_activation "$old_release" "$candidate_release" || :
+      return 1
+    fi
+  else
+    if ! restart_service || ! wait_for_health; then
+      rollback_activation "$old_release" "$candidate_release" || :
+      return 1
+    fi
+  fi
+
+  remove_activation_journal || return 1
+  prune_releases
+}
+
+activate_release() {
+  [ "$#" -eq 1 ] || return 1
+  local candidate_release old_release
+  candidate_release=$1
+  validate_release_id "$candidate_release" || {
+    die 'candidate release ID is invalid'
+    return 1
+  }
+  validate_release "$RELEASES_DIR/$candidate_release" || return 1
+  if [ -e "$ACTIVATION_FILE" ] || [ -L "$ACTIVATION_FILE" ]; then
+    die 'an activation journal already exists'
+    return 1
+  fi
+
+  old_release=NONE
+  if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ]; then
+    old_release=$(current_release_id) || {
+      die 'current release link is invalid before activation'
+      return 1
+    }
+    validate_release "$RELEASES_DIR/$old_release" || return 1
+  fi
+
+  write_activation "$old_release" "$candidate_release" || return 1
+  resume_activation "$old_release" "$candidate_release" "$old_release"
+}
+
+recover_activation() {
+  [ "$#" -eq 0 ] || return 1
+  local old_release candidate_release current_state
+  if [ ! -e "$ACTIVATION_FILE" ] && [ ! -L "$ACTIVATION_FILE" ]; then
+    return 0
+  fi
+  read_activation || return 1
+  old_release=$ACTIVATION_OLD_RELEASE
+  candidate_release=$ACTIVATION_CANDIDATE_RELEASE
+
+  validate_release "$RELEASES_DIR/$candidate_release" || return 1
+  if [ "$old_release" != NONE ]; then
+    validate_release "$RELEASES_DIR/$old_release" || return 1
+  fi
+
+  current_state=NONE
+  if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ]; then
+    current_state=$(current_release_id) || {
+      die 'current release link is invalid during recovery'
+      return 1
+    }
+  fi
+
+  if [ "$old_release" = NONE ]; then
+    case "$current_state" in
+      NONE|"$candidate_release") ;;
+      *)
+        die 'current release is unrelated to activation journal'
+        return 1
+        ;;
+    esac
+  else
+    case "$current_state" in
+      "$old_release"|"$candidate_release") ;;
+      *)
+        die 'current release is unrelated to activation journal'
+        return 1
+        ;;
+    esac
+  fi
+
+  resume_activation "$old_release" "$candidate_release" "$current_state"
 }
 
 preflight_common() {
@@ -1392,6 +1662,66 @@ acquire_lock() {
   return 1
 }
 
+cmd_status() {
+  [ "$#" -eq 0 ] || {
+    die 'usage: dsh-mac status'
+    return 1
+  }
+  preflight_common "$LSOF_BIN" "$CURL_BIN" || return 1
+  health_state
+}
+
+cmd_open() {
+  [ "$#" -eq 0 ] || {
+    die 'usage: dsh-mac open'
+    return 1
+  }
+  preflight_common "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  health_state >/dev/null || {
+    die 'DSH service is not healthy'
+    return 1
+  }
+  "$OPEN_BIN" http://127.0.0.1:3080
+}
+
+cmd_update() {
+  [ "$#" -eq 0 ] || {
+    die 'usage: dsh-mac update'
+    return 1
+  }
+  local update_status staged_release current_id
+  preflight_install || return 1
+  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
+    die 'dsh-mac is not installed'
+    return 1
+  }
+  acquire_lock || return 1
+
+  update_status=0
+  recover_activation || update_status=1
+  if [ "$update_status" -eq 0 ]; then
+    stage_release || update_status=1
+  fi
+  if [ "$update_status" -eq 0 ]; then
+    staged_release=$STAGED_RELEASE_ID
+    current_id=$(current_release_id 2>/dev/null) || current_id=
+    if [ "$staged_release" = "$current_id" ]; then
+      if health_state >/dev/null; then
+        :
+      elif ! start_service || ! wait_for_health; then
+        update_status=1
+      fi
+    elif ! activate_release "$staged_release"; then
+      update_status=1
+    fi
+  fi
+
+  if ! release_lock; then
+    return 1
+  fi
+  return "$update_status"
+}
+
 main() {
   command_name=${1:-}
   case "$command_name" in
@@ -1402,8 +1732,20 @@ main() {
       }
       printf '%s\n' "$MANAGER_VERSION"
       ;;
+    status)
+      shift
+      cmd_status "$@"
+      ;;
+    open)
+      shift
+      cmd_open "$@"
+      ;;
+    update)
+      shift
+      cmd_update "$@"
+      ;;
     *)
-      die 'usage: dsh-mac version'
+      die 'usage: dsh-mac {version|status|open|update}'
       return 1
       ;;
   esac
