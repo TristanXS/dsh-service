@@ -52,7 +52,10 @@ case "$cli_path" in
         exit 70
       fi
       [ "${DSH_TEST_CLI_FAIL:-0}" != 1 ] || exit 71
-      if [ -n "${DSH_TEST_CLI_VERSION_OVERRIDE:-}" ]; then
+      if [ "${DSH_TEST_CLI_OUTPUT+x}" = x ]; then
+        printf "%s\n" "$DSH_TEST_CLI_OUTPUT"
+        exit 0
+      elif [ -n "${DSH_TEST_CLI_VERSION_OVERRIDE:-}" ]; then
         cli_version=$DSH_TEST_CLI_VERSION_OVERRIDE
       else
         cli_version=$(/usr/bin/sed -n '\''s/.*"version":"\([^" ]*\)".*/\1/p'\'' "$release_path/node_modules/@deepseek-ai/dsh/package.json")
@@ -130,7 +133,8 @@ prepare_runtime_home() {
   : >"$DSH_TEST_NODE_LOG"
   unset DSH_TEST_NPM_FAIL_VIEW DSH_TEST_NPM_FAIL_INSTALL
   unset DSH_TEST_PACKAGE_VERSION DSH_TEST_CLI_FAIL
-  unset DSH_TEST_CLI_VERSION_OVERRIDE DSH_TEST_REJECT_COMPLETE_DURING_VERSION
+  unset DSH_TEST_CLI_OUTPUT DSH_TEST_CLI_VERSION_OVERRIDE
+  unset DSH_TEST_REJECT_COMPLETE_DURING_VERSION
   export DSH_TEST_LATEST_VERSION=0.1.0-rc.6
   write_runtime_fakes
   export PATH="$TEST_ROOT/bin:/usr/bin:/bin"
@@ -354,6 +358,51 @@ test_stage_requires_cli_version_to_match_package() (
   done
 )
 
+test_stage_rejects_version_prefix_collision() (
+  prepare_runtime_home stage-prefix-collision || return 1
+  install_manager_runner || return 1
+  export DSH_TEST_CLI_OUTPUT='@deepseek-ai/dsh 0.1.0-rc.60'
+
+  ! stage_release || return 1
+  for staged_path in "$RELEASES_DIR"/.staging-* "$RELEASES_DIR"/0.1.0-rc.6-*; do
+    [ ! -e "$staged_path" ] || return 1
+  done
+)
+
+test_validate_release_rejects_version_prefix_collision() (
+  prepare_runtime_home validate-prefix-collision || return 1
+  install_manager_runner || return 1
+  stage_successfully || return 1
+  release_path="$RELEASES_DIR/$STAGED_RELEASE_ID"
+  export DSH_TEST_CLI_OUTPUT='@deepseek-ai/dsh 0.1.0-rc.60'
+
+  ! validate_release "$release_path"
+)
+
+test_current_matches_rejects_version_prefix_collision() (
+  prepare_runtime_home current-prefix-collision || return 1
+  install_manager_runner || return 1
+  stage_successfully || return 1
+  release_id=$STAGED_RELEASE_ID
+  atomic_release_link "$CURRENT_LINK" "$release_id" || return 1
+  export DSH_TEST_CLI_OUTPUT='@deepseek-ai/dsh 0.1.0-rc.60'
+
+  ! current_matches 0.1.0-rc.6
+)
+
+test_validate_release_rejects_ambiguous_version_output() (
+  prepare_runtime_home ambiguous-version || return 1
+  install_manager_runner || return 1
+  stage_successfully || return 1
+  release_path="$RELEASES_DIR/$STAGED_RELEASE_ID"
+
+  export DSH_TEST_CLI_OUTPUT='dsh 0.1.0-rc.6 next 0.1.0-rc.7'
+  ! validate_release "$release_path" || return 1
+  export DSH_TEST_CLI_OUTPUT='dsh 0.1.0-rc.6
+extra output'
+  ! validate_release "$release_path"
+)
+
 test_stage_creates_unique_final_releases() (
   prepare_runtime_home unique || return 1
   install_manager_runner || return 1
@@ -406,6 +455,19 @@ test_current_matches_returns_healthy_release_without_reinstalling() (
   assert_eq 0 "$(count_log_prefix 'install|' "$DSH_TEST_NPM_LOG")"
 )
 
+test_current_matches_rejects_releases_symlink_outside_root() (
+  prepare_runtime_home current-outside-releases || return 1
+  install_manager_runner || return 1
+  stage_successfully || return 1
+  release_id=$STAGED_RELEASE_ID
+  atomic_release_link "$CURRENT_LINK" "$release_id" || return 1
+  outside_releases="$TEST_ROOT/outside-current-releases"
+  /bin/mv "$RELEASES_DIR" "$outside_releases" || return 1
+  /bin/ln -s "$outside_releases" "$RELEASES_DIR" || return 1
+
+  ! current_matches 0.1.0-rc.6
+)
+
 test_release_validation_requires_completion_marker() (
   prepare_runtime_home validate-release || return 1
   install_manager_runner || return 1
@@ -425,6 +487,36 @@ test_atomic_links_and_current_release_id_use_release_ids() (
   assert_eq "$first_release" "$(current_release_id)" || return 1
   atomic_release_link "$PREVIOUS_LINK" "$second_release" || return 1
   assert_eq "releases/$second_release" "$(/usr/bin/readlink "$PREVIOUS_LINK")"
+)
+
+test_atomic_release_link_rejects_releases_symlink_outside_root() (
+  prepare_runtime_home link-outside-releases || return 1
+  release_id=0.1.0-1786630000-1200
+  /bin/mkdir -p "$RELEASES_DIR/$release_id" || return 1
+  outside_releases="$TEST_ROOT/outside-link-releases"
+  /bin/mv "$RELEASES_DIR" "$outside_releases" || return 1
+  /bin/ln -s "$outside_releases" "$RELEASES_DIR" || return 1
+
+  ! atomic_release_link "$CURRENT_LINK" "$release_id" || return 1
+  [ ! -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]
+)
+
+test_atomic_release_link_rejects_current_directory_target() (
+  prepare_runtime_home current-directory-target || return 1
+  release_id=0.1.0-1786630000-1200
+  /bin/mkdir -p "$RELEASES_DIR/$release_id" "$CURRENT_LINK" || return 1
+
+  ! atomic_release_link "$CURRENT_LINK" "$release_id" || return 1
+  [ -d "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]
+)
+
+test_atomic_release_link_rejects_previous_directory_target() (
+  prepare_runtime_home previous-directory-target || return 1
+  release_id=0.1.0-1786630000-1200
+  /bin/mkdir -p "$RELEASES_DIR/$release_id" "$PREVIOUS_LINK" || return 1
+
+  ! atomic_release_link "$PREVIOUS_LINK" "$release_id" || return 1
+  [ -d "$PREVIOUS_LINK" ] && [ ! -L "$PREVIOUS_LINK" ]
 )
 
 test_installed_cli_uses_manager_owned_runner_without_sibling_libexec() (
@@ -508,12 +600,20 @@ run_test 'staging rejects a package CLI symlink escape' test_stage_rejects_packa
 run_test 'staging records absolute Node and safe CLI then probes before completion' test_stage_records_runtime_and_validated_cli_before_completion
 run_test 'staging writes completion only after the copied runner check' test_stage_writes_completion_only_after_runner_check
 run_test 'staging rejects a CLI version that does not match the package' test_stage_requires_cli_version_to_match_package
+run_test 'staging rejects a CLI version prefix collision' test_stage_rejects_version_prefix_collision
+run_test 'release validation rejects a CLI version prefix collision' test_validate_release_rejects_version_prefix_collision
+run_test 'current match rejects a CLI version prefix collision' test_current_matches_rejects_version_prefix_collision
+run_test 'release validation rejects ambiguous CLI version output' test_validate_release_rejects_ambiguous_version_output
 run_test 'staging gives successive installs unique final release IDs' test_stage_creates_unique_final_releases
 run_test 'npm failure leaves current untouched' test_npm_failure_leaves_current_release_untouched
 run_test 'validation failure leaves current untouched' test_validation_failure_leaves_current_release_untouched
 run_test 'healthy matching current release avoids npm install' test_current_matches_returns_healthy_release_without_reinstalling
+run_test 'current match rejects releases symlinked outside manager root' test_current_matches_rejects_releases_symlink_outside_root
 run_test 'release validation requires the completion marker' test_release_validation_requires_completion_marker
 run_test 'atomic release links expose validated current IDs' test_atomic_links_and_current_release_id_use_release_ids
+run_test 'atomic release link rejects releases symlinked outside manager root' test_atomic_release_link_rejects_releases_symlink_outside_root
+run_test 'atomic release link rejects current directory target' test_atomic_release_link_rejects_current_directory_target
+run_test 'atomic release link rejects previous directory target' test_atomic_release_link_rejects_previous_directory_target
 run_test 'installed CLI stages with manager-owned runner and no sibling libexec' test_installed_cli_uses_manager_owned_runner_without_sibling_libexec
 run_test 'runner check accepts spaces and ampersand before completion' test_runner_check_accepts_special_release_path_without_completion
 run_test 'runner normal mode requires completion before Web exec' test_runner_normal_mode_requires_completion_before_exec

@@ -483,13 +483,59 @@ resolve_release_cli() {
   RESOLVED_CLI_ENTRY="$cli_parent/$(basename -- "$cli_candidate")"
 }
 
+cli_version_matches() (
+  [ "$#" -eq 2 ] || return 1
+  expected_cli_version=$1
+  cli_version_text=$2
+  [ -n "$cli_version_text" ] || return 1
+  case "$cli_version_text" in
+    *"
+"*) return 1 ;;
+  esac
+
+  cli_version_pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+  matched_cli_version=
+  cli_version_count=0
+  set -f
+  for cli_version_token in $cli_version_text; do
+    case "$cli_version_token" in
+      v[0-9]*) cli_version_token=${cli_version_token#v} ;;
+    esac
+    if [[ "$cli_version_token" =~ $cli_version_pattern ]]; then
+      matched_cli_version=$cli_version_token
+      cli_version_count=$((cli_version_count + 1))
+    fi
+  done
+  [ "$cli_version_count" -eq 1 ] && [ "$matched_cli_version" = "$expected_cli_version" ]
+)
+
+release_root_is_owned() {
+  [ "$#" -eq 0 ] || return 1
+  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || return 1
+  [ -d "$RELEASES_DIR" ] && [ ! -L "$RELEASES_DIR" ] || return 1
+
+  owned_root_physical=$(CDPATH= cd -P -- "$DSH_MAC_ROOT" && pwd) || return 1
+  owned_releases_physical=$(CDPATH= cd -P -- "$RELEASES_DIR" && pwd) || return 1
+  [ "$owned_releases_physical" = "$owned_root_physical/releases" ]
+}
+
+release_dir_is_owned() {
+  [ "$#" -eq 1 ] || return 1
+  release_root_is_owned || return 1
+  owned_release_candidate=$1
+  [ -d "$owned_release_candidate" ] && [ ! -L "$owned_release_candidate" ] || return 1
+  owned_release_physical=$(CDPATH= cd -P -- "$owned_release_candidate" && pwd) || return 1
+  owned_release_parent=$(CDPATH= cd -P -- "$owned_release_physical/.." && pwd) || return 1
+  [ "$owned_release_parent" = "$owned_releases_physical" ]
+}
+
 validate_release() {
   [ "$#" -eq 1 ] || {
     die 'validate_release requires a release path'
     return 1
   }
   release_path=$1
-  [ -d "$release_path" ] && [ ! -L "$release_path" ] || {
+  release_dir_is_owned "$release_path" || {
     die 'release directory is unavailable'
     return 1
   }
@@ -521,13 +567,10 @@ validate_release() {
     die 'release CLI version probe failed'
     return 1
   }
-  case "$cli_version_output" in
-    *"$MANIFEST_DSH_VERSION"*) ;;
-    *)
-      die 'release CLI reported the wrong version'
-      return 1
-      ;;
-  esac
+  cli_version_matches "$MANIFEST_DSH_VERSION" "$cli_version_output" || {
+    die 'release CLI reported the wrong version'
+    return 1
+  }
 }
 
 current_release_id() {
@@ -539,7 +582,7 @@ current_release_id() {
     *) return 1 ;;
   esac
   validate_release_id "$current_id" || return 1
-  [ -d "$RELEASES_DIR/$current_id" ] || return 1
+  release_dir_is_owned "$RELEASES_DIR/$current_id" || return 1
   printf '%s\n' "$current_id"
 }
 
@@ -561,14 +604,14 @@ atomic_release_link() {
     die 'release ID is invalid'
     return 1
   }
-  [ -d "$RELEASES_DIR/$release_id" ] || {
+  release_dir_is_owned "$RELEASES_DIR/$release_id" || {
     die 'release directory does not exist'
     return 1
   }
-  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
-    die 'manager root is unavailable'
+  if { [ -e "$link_path" ] || [ -L "$link_path" ]; } && [ ! -L "$link_path" ]; then
+    die 'release link target must be absent or a symlink'
     return 1
-  }
+  fi
 
   link_serial=$$
   link_tmp="$DSH_MAC_ROOT/.release-link-$link_serial"
@@ -576,7 +619,8 @@ atomic_release_link() {
     link_serial=$((link_serial + 1))
     link_tmp="$DSH_MAC_ROOT/.release-link-$link_serial"
   done
-  /bin/ln -s "releases/$release_id" "$link_tmp" || {
+  expected_link_target="releases/$release_id"
+  /bin/ln -s "$expected_link_target" "$link_tmp" || {
     die 'could not create temporary release link'
     return 1
   }
@@ -585,6 +629,14 @@ atomic_release_link() {
     die 'could not publish release link'
     return 1
   fi
+  published_link_target=$(/usr/bin/readlink "$link_path" 2>/dev/null) || {
+    die 'published release link is invalid'
+    return 1
+  }
+  [ -L "$link_path" ] && [ "$published_link_target" = "$expected_link_target" ] || {
+    die 'published release link is invalid'
+    return 1
+  }
 }
 
 current_matches() {
@@ -770,14 +822,11 @@ process.stdout.write(pkg.version + "\n" + pkg.bin.dsh + "\n");
     die 'staged DSH version probe failed'
     return 1
   }
-  case "$staged_cli_output" in
-    *"$installed_version"*) ;;
-    *)
-      remove_staging_release "$staging_release" || :
-      die 'staged DSH reported the wrong version'
-      return 1
-      ;;
-  esac
+  cli_version_matches "$installed_version" "$staged_cli_output" || {
+    remove_staging_release "$staging_release" || :
+    die 'staged DSH reported the wrong version'
+    return 1
+  }
 
   : >"$staging_release/.complete" || {
     remove_staging_release "$staging_release" || :
