@@ -48,6 +48,425 @@ init_paths() {
   SERVICE_TARGET="gui/$(/usr/bin/id -u)/dev.dsh-mac.web"
 }
 
+xml_escape() {
+  [ "$#" -eq 1 ] || return 1
+  local escaped_value=$1
+  escaped_value=${escaped_value//&/&amp;}
+  escaped_value=${escaped_value//</&lt;}
+  escaped_value=${escaped_value//>/&gt;}
+  escaped_value=${escaped_value//\"/&quot;}
+  escaped_value=${escaped_value//\'/&apos;}
+  printf '%s' "$escaped_value"
+}
+
+render_plist() {
+  [ "$#" -eq 0 ] || return 1
+  local run_path_xml workspace_xml home_xml stdout_xml stderr_xml
+  run_path_xml=$(xml_escape "$CURRENT_LINK/run") || return 1
+  workspace_xml=$(xml_escape "$WORKSPACE_DIR") || return 1
+  home_xml=$(xml_escape "$HOME") || return 1
+  stdout_xml=$(xml_escape "$LOG_DIR/stdout.log") || return 1
+  stderr_xml=$(xml_escape "$LOG_DIR/stderr.log") || return 1
+
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+  printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+  printf '%s\n' '<plist version="1.0">'
+  printf '%s\n' '<dict>'
+  printf '%s\n' '  <key>Label</key>'
+  printf '%s\n' '  <string>dev.dsh-mac.web</string>'
+  printf '%s\n' '  <key>ProgramArguments</key>'
+  printf '%s\n' '  <array>'
+  printf '%s\n' '    <string>/bin/bash</string>'
+  printf '    <string>%s</string>\n' "$run_path_xml"
+  printf '%s\n' '  </array>'
+  printf '%s\n' '  <key>WorkingDirectory</key>'
+  printf '  <string>%s</string>\n' "$workspace_xml"
+  printf '%s\n' '  <key>EnvironmentVariables</key>'
+  printf '%s\n' '  <dict>'
+  printf '%s\n' '    <key>HOME</key>'
+  printf '    <string>%s</string>\n' "$home_xml"
+  printf '%s\n' '  </dict>'
+  printf '%s\n' '  <key>KeepAlive</key>'
+  printf '%s\n' '  <true/>'
+  printf '%s\n' '  <key>ThrottleInterval</key>'
+  printf '%s\n' '  <integer>10</integer>'
+  printf '%s\n' '  <key>ExitTimeOut</key>'
+  printf '%s\n' '  <integer>15</integer>'
+  printf '%s\n' '  <key>StandardOutPath</key>'
+  printf '  <string>%s</string>\n' "$stdout_xml"
+  printf '%s\n' '  <key>StandardErrorPath</key>'
+  printf '  <string>%s</string>\n' "$stderr_xml"
+  printf '%s\n' '</dict>'
+  printf '%s\n' '</plist>'
+}
+
+ensure_plist() {
+  [ "$#" -eq 0 ] || return 1
+  local plist_dir plist_tmp plist_serial
+  plist_dir=${PLIST_PATH%/*}
+  /bin/mkdir -p "$plist_dir" "$LOG_DIR" "$WORKSPACE_DIR" || {
+    die 'could not create service directories'
+    return 1
+  }
+
+  plist_serial=$$
+  plist_tmp="$plist_dir/.${PLIST_PATH##*/}.$plist_serial"
+  while [ -e "$plist_tmp" ] || [ -L "$plist_tmp" ]; do
+    plist_serial=$((plist_serial + 1))
+    plist_tmp="$plist_dir/.${PLIST_PATH##*/}.$plist_serial"
+  done
+  if ! (
+    umask 077
+    render_plist >"$plist_tmp"
+  ); then
+    /bin/rm -f -- "$plist_tmp"
+    die 'could not render LaunchAgent plist'
+    return 1
+  fi
+  if ! "$PLUTIL_BIN" -lint "$plist_tmp" >/dev/null; then
+    /bin/rm -f -- "$plist_tmp"
+    die 'LaunchAgent plist failed validation'
+    return 1
+  fi
+  if ! /bin/chmod 0644 "$plist_tmp" || ! /bin/mv -f "$plist_tmp" "$PLIST_PATH"; then
+    /bin/rm -f -- "$plist_tmp"
+    die 'could not publish LaunchAgent plist'
+    return 1
+  fi
+}
+
+service_loaded() {
+  [ "$#" -eq 0 ] || return 1
+  "$LAUNCHCTL_BIN" print "$SERVICE_TARGET" >/dev/null 2>&1
+}
+
+launchd_pid() {
+  [ "$#" -eq 0 ] || return 1
+  local print_output print_line parsed_pid pid_count pid_pattern
+  print_output=$("$LAUNCHCTL_BIN" print "$SERVICE_TARGET" 2>/dev/null) || return 1
+  parsed_pid=
+  pid_count=0
+  pid_pattern='^[[:space:]]*pid[[:space:]]=[[:space:]]([0-9]+)[[:space:]]*$'
+  while IFS= read -r print_line || [ -n "$print_line" ]; do
+    if [[ "$print_line" =~ $pid_pattern ]]; then
+      parsed_pid=${BASH_REMATCH[1]}
+      pid_count=$((pid_count + 1))
+    fi
+  done <<<"$print_output"
+  [ "$pid_count" -eq 1 ] || return 1
+  case "$parsed_pid" in
+    ''|0|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$parsed_pid"
+}
+
+listener_records() {
+  [ "$#" -le 1 ] || return 1
+  local listener_scope selector lsof_output lsof_status field_line current_pid
+  listener_scope=${1:-loopback}
+  case "$listener_scope" in
+    all) selector=-iTCP:3080 ;;
+    loopback) selector=-iTCP@127.0.0.1:3080 ;;
+    *) return 1 ;;
+  esac
+
+  lsof_output=$("$LSOF_BIN" -nP -a "$selector" -sTCP:LISTEN -Fpn 2>/dev/null)
+  lsof_status=$?
+  if [ "$lsof_status" -ne 0 ] && [ -n "$lsof_output" ]; then
+    return 1
+  fi
+  [ -n "$lsof_output" ] || return 0
+
+  current_pid=
+  while IFS= read -r field_line || [ -n "$field_line" ]; do
+    case "$field_line" in
+      p*)
+        current_pid=${field_line#p}
+        case "$current_pid" in
+          ''|0|*[!0-9]*) return 1 ;;
+        esac
+        ;;
+      n*)
+        [ -n "$current_pid" ] || return 1
+        printf '%s|%s\n' "$current_pid" "${field_line#n}"
+        ;;
+    esac
+  done <<<"$lsof_output"
+}
+
+listener_pids() {
+  [ "$#" -le 1 ] || return 1
+  local listener_scope records record listener_pid seen_pids
+  listener_scope=${1:-loopback}
+  records=$(listener_records "$listener_scope") || return 1
+  [ -n "$records" ] || return 0
+
+  seen_pids=' '
+  while IFS= read -r record || [ -n "$record" ]; do
+    listener_pid=${record%%|*}
+    case "$seen_pids" in
+      *" $listener_pid "*) ;;
+      *)
+        printf '%s\n' "$listener_pid"
+        seen_pids="$seen_pids$listener_pid "
+        ;;
+    esac
+  done <<<"$records"
+}
+
+listener_conflict() {
+  [ "$#" -eq 1 ] || return 2
+  local expected_pid records record listener_pid listener_name
+  expected_pid=$1
+  records=$(listener_records all) || return 2
+  [ -n "$records" ] || return 1
+
+  while IFS= read -r record || [ -n "$record" ]; do
+    listener_pid=${record%%|*}
+    listener_name=${record#*|}
+    if [ -z "$expected_pid" ] || [ "$listener_pid" != "$expected_pid" ] ||
+      [ "$listener_name" != 127.0.0.1:3080 ]; then
+      return 0
+    fi
+  done <<<"$records"
+  return 1
+}
+
+pid_is_listening() {
+  [ "$#" -eq 1 ] || return 1
+  local wanted_pid active_pids active_pid
+  wanted_pid=$1
+  [ -n "$wanted_pid" ] || return 1
+  active_pids=$(listener_pids all) || return 1
+  while IFS= read -r active_pid || [ -n "$active_pid" ]; do
+    [ "$active_pid" = "$wanted_pid" ] && return 0
+  done <<<"$active_pids"
+  return 1
+}
+
+health_state() {
+  [ "$#" -eq 0 ] || return 1
+  local loaded_state service_pid conflict_status loopback_pids loopback_pid loopback_count
+  loaded_state=0
+  service_loaded && loaded_state=1
+  service_pid=$(launchd_pid 2>/dev/null) || service_pid=
+
+  listener_conflict "$service_pid"
+  conflict_status=$?
+  if [ "$conflict_status" -ne 1 ]; then
+    printf 'conflict\n'
+    return 1
+  fi
+  if [ "$loaded_state" -eq 0 ]; then
+    printf 'unloaded\n'
+    return 1
+  fi
+  if [ -z "$service_pid" ]; then
+    printf 'starting\n'
+    return 1
+  fi
+
+  loopback_pids=$(listener_pids loopback) || {
+    printf 'conflict\n'
+    return 1
+  }
+  if [ -z "$loopback_pids" ]; then
+    printf 'starting\n'
+    return 1
+  fi
+  loopback_count=0
+  loopback_pid=
+  while IFS= read -r loopback_pid_line || [ -n "$loopback_pid_line" ]; do
+    [ -n "$loopback_pid_line" ] || continue
+    loopback_pid=$loopback_pid_line
+    loopback_count=$((loopback_count + 1))
+  done <<<"$loopback_pids"
+  if [ "$loopback_count" -ne 1 ] || [ "$loopback_pid" != "$service_pid" ]; then
+    printf 'conflict\n'
+    return 1
+  fi
+
+  if "$CURL_BIN" --fail --silent --show-error --max-time 2 --output /dev/null \
+    http://127.0.0.1:3080 >/dev/null; then
+    printf 'healthy\n'
+    return 0
+  fi
+  printf 'unhealthy\n'
+  return 1
+}
+
+wait_for_health() {
+  [ "$#" -eq 0 ] || return 1
+  local wait_attempt
+  wait_attempt=0
+  while [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; do
+    health_state >/dev/null && return 0
+    wait_attempt=$((wait_attempt + 1))
+    if [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; then
+      /bin/sleep "$WAIT_INTERVAL"
+    fi
+  done
+  return 1
+}
+
+wait_for_service_absence() {
+  [ "$#" -eq 1 ] || return 1
+  local old_pid wait_attempt job_present listener_present
+  old_pid=$1
+  wait_attempt=0
+  while [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; do
+    job_present=0
+    listener_present=0
+    service_loaded && job_present=1
+    if [ -n "$old_pid" ] && pid_is_listening "$old_pid"; then
+      listener_present=1
+    fi
+    if [ "$job_present" -eq 0 ] && [ "$listener_present" -eq 0 ]; then
+      return 0
+    fi
+    wait_attempt=$((wait_attempt + 1))
+    if [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; then
+      /bin/sleep "$WAIT_INTERVAL"
+    fi
+  done
+  return 1
+}
+
+wait_for_restarted_health() {
+  [ "$#" -eq 1 ] || return 1
+  local old_pid wait_attempt new_pid
+  old_pid=$1
+  wait_attempt=0
+  while [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; do
+    new_pid=$(launchd_pid 2>/dev/null) || new_pid=
+    if [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] &&
+      ! pid_is_listening "$old_pid" && health_state >/dev/null; then
+      return 0
+    fi
+    wait_attempt=$((wait_attempt + 1))
+    if [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; then
+      /bin/sleep "$WAIT_INTERVAL"
+    fi
+  done
+  return 1
+}
+
+bootstrap_service() {
+  [ "$#" -eq 0 ] || return 1
+  local service_domain
+  service_domain=${SERVICE_TARGET%/*}
+  "$LAUNCHCTL_BIN" bootstrap "$service_domain" "$PLIST_PATH" || {
+    die 'could not bootstrap LaunchAgent'
+    return 1
+  }
+  wait_for_health || {
+    die 'LaunchAgent did not become healthy'
+    return 1
+  }
+}
+
+start_service() {
+  [ "$#" -eq 0 ] || return 1
+  local current_health current_pid
+  ensure_plist || return 1
+  current_health=$(health_state)
+  case "$current_health" in
+    healthy) return 0 ;;
+    conflict)
+      die 'port 3080 is owned by another listener'
+      return 1
+      ;;
+    unloaded)
+      bootstrap_service
+      ;;
+    starting)
+      current_pid=$(launchd_pid 2>/dev/null) || current_pid=
+      if [ -z "$current_pid" ]; then
+        listener_conflict ''
+        case "$?" in
+          1) ;;
+          *)
+            die 'port 3080 is owned by another listener'
+            return 1
+            ;;
+        esac
+        "$LAUNCHCTL_BIN" kickstart "$SERVICE_TARGET" || {
+          die 'could not kickstart LaunchAgent'
+          return 1
+        }
+        wait_for_health || {
+          die 'LaunchAgent did not become healthy'
+          return 1
+        }
+      elif wait_for_health; then
+        return 0
+      else
+        restart_service
+      fi
+      ;;
+    unhealthy) restart_service ;;
+    *)
+      die 'unknown service health state'
+      return 1
+      ;;
+  esac
+}
+
+stop_service() {
+  [ "$#" -eq 0 ] || return 1
+  local old_pid
+  service_loaded || return 0
+  old_pid=$(launchd_pid 2>/dev/null) || old_pid=
+  "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
+    die 'could not boot out LaunchAgent'
+    return 1
+  }
+  wait_for_service_absence "$old_pid" || {
+    die 'LaunchAgent did not stop cleanly'
+    return 1
+  }
+}
+
+restart_service() {
+  [ "$#" -eq 0 ] || return 1
+  local restart_health old_pid
+  ensure_plist || return 1
+  restart_health=$(health_state)
+  case "$restart_health" in
+    conflict)
+      die 'port 3080 is owned by another listener'
+      return 1
+      ;;
+    unloaded) bootstrap_service; return $? ;;
+  esac
+
+  old_pid=$(launchd_pid 2>/dev/null) || old_pid=
+  if [ -n "$old_pid" ]; then
+    listener_conflict "$old_pid"
+    case "$?" in
+      1) ;;
+      *)
+        die 'port 3080 is owned by another listener'
+        return 1
+        ;;
+    esac
+    if "$LAUNCHCTL_BIN" kill SIGTERM "$SERVICE_TARGET" &&
+      wait_for_restarted_health "$old_pid"; then
+      return 0
+    fi
+  fi
+
+  "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
+    die 'could not boot out LaunchAgent during restart'
+    return 1
+  }
+  wait_for_service_absence "$old_pid" || {
+    die 'old LaunchAgent instance did not stop'
+    return 1
+  }
+  bootstrap_service
+}
+
 node_version_supported() {
   [ "$#" -eq 1 ] || return 1
 

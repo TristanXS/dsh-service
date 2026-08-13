@@ -13,7 +13,12 @@ run_runtime_tests() {
   /bin/bash "$TESTS_DIR/test_runtime.sh"
 }
 
+run_launchd_tests() {
+  /bin/bash "$TESTS_DIR/test_launchd.sh"
+}
+
 run_test 'foundation test suite' run_foundation_tests
 run_test 'runtime test suite' run_runtime_tests
+run_test 'launchd test suite' run_launchd_tests
 
 finish_tests
