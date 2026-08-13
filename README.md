@@ -61,7 +61,11 @@ The foreground command has no login autostart, manager status, or managed rollba
 
 ## Update DSH and the manager
 
-`dsh-mac update` updates DSH only. It resolves the npm `latest` version once and installs that exact version in a staging directory. It validates the candidate, switches the active release, restarts the service, and checks health.
+`dsh-mac update` updates DSH only. It first resolves the npm `latest` version. If the current release validates at that version, the manager checks service health. A healthy match needs no installation or restart, so its process ID remains unchanged.
+
+If that release is stopped or unhealthy, the manager starts or restarts it as needed, then waits for health. A foreign listener on port `3080` blocks recovery. With a valid current release, only a different DSH version takes the activation path.
+
+For activation, the manager stages and validates the resolved version before changing release links. It writes an activation journal and points `previous` to the old release. It points `current` to the candidate, then starts or restarts the service. It verifies listener ownership and web health before clearing the journal and pruning unreferenced releases.
 
 Update the manager from a reviewed checkout, then run the installer again:
 
@@ -76,7 +80,7 @@ If a DSH candidate fails its health check, the manager restores and verifies the
 
 ## Installed paths
 
-The manager owns these paths under your home directory:
+The manager owns these paths under your home directory. In the table, `release_id` represents a generated versioned directory name.
 
 | Purpose | Path |
 | --- | --- |
@@ -84,6 +88,11 @@ The manager owns these paths under your home directory:
 | Manager root | `~/Library/Application Support/dsh-mac` |
 | Runner template | `~/Library/Application Support/dsh-mac/libexec/dsh-mac-run` |
 | Versioned releases | `~/Library/Application Support/dsh-mac/releases` |
+| Release directory | `~/Library/Application Support/dsh-mac/releases/release_id` |
+| Release package tree | `~/Library/Application Support/dsh-mac/releases/release_id/node_modules/` |
+| Release manifest | `~/Library/Application Support/dsh-mac/releases/release_id/manifest.env` |
+| Release runner | `~/Library/Application Support/dsh-mac/releases/release_id/run` |
+| Release completion marker | `~/Library/Application Support/dsh-mac/releases/release_id/.complete` |
 | Active release link | `~/Library/Application Support/dsh-mac/current` |
 | Previous release link | `~/Library/Application Support/dsh-mac/previous` |
 | Activation journal | `~/Library/Application Support/dsh-mac/activation.env` |
