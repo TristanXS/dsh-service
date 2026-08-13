@@ -1,0 +1,108 @@
+#!/bin/bash
+set -u
+
+runner_die() {
+  printf 'dsh-mac: %s\n' "$*" >&2
+  exit 1
+}
+
+if [ "$#" -eq 0 ]; then
+  RUN_MODE=service
+elif [ "$#" -eq 1 ] && [ "$1" = --check ]; then
+  RUN_MODE=check
+else
+  printf 'dsh-mac: usage: run [--check]\n' >&2
+  exit 64
+fi
+
+RUN_PATH="$0"
+RUN_DIR="$(CDPATH= cd -P -- "$(dirname -- "$RUN_PATH")" && pwd)" || exit 1
+MANIFEST_PATH="$RUN_DIR/manifest.env"
+[ -r "$MANIFEST_PATH" ] || runner_die 'cannot read release manifest'
+
+manifest_schema=
+manifest_dsh_version=
+manifest_node_bin=
+manifest_cli_relative=
+manifest_installed_at=
+seen_schema=0
+seen_dsh_version=0
+seen_node_bin=0
+seen_cli_relative=0
+seen_installed_at=0
+
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    *=*) ;;
+    *) runner_die 'malformed release manifest' ;;
+  esac
+  key=${line%%=*}
+  value=${line#*=}
+  case "$key" in
+    SCHEMA_VERSION)
+      [ "$seen_schema" -eq 0 ] || runner_die 'duplicate release manifest key'
+      seen_schema=1
+      manifest_schema=$value
+      ;;
+    DSH_VERSION)
+      [ "$seen_dsh_version" -eq 0 ] || runner_die 'duplicate release manifest key'
+      seen_dsh_version=1
+      manifest_dsh_version=$value
+      ;;
+    NODE_BIN)
+      [ "$seen_node_bin" -eq 0 ] || runner_die 'duplicate release manifest key'
+      seen_node_bin=1
+      manifest_node_bin=$value
+      ;;
+    CLI_RELATIVE)
+      [ "$seen_cli_relative" -eq 0 ] || runner_die 'duplicate release manifest key'
+      seen_cli_relative=1
+      manifest_cli_relative=$value
+      ;;
+    INSTALLED_AT)
+      [ "$seen_installed_at" -eq 0 ] || runner_die 'duplicate release manifest key'
+      seen_installed_at=1
+      manifest_installed_at=$value
+      ;;
+    *) runner_die 'unknown release manifest key' ;;
+  esac
+done <"$MANIFEST_PATH"
+
+[ "$seen_schema" -eq 1 ] &&
+  [ "$seen_dsh_version" -eq 1 ] &&
+  [ "$seen_node_bin" -eq 1 ] &&
+  [ "$seen_cli_relative" -eq 1 ] &&
+  [ "$seen_installed_at" -eq 1 ] || runner_die 'release manifest is missing required keys'
+[ "$manifest_schema" = 1 ] || runner_die 'unsupported release manifest schema'
+[ -n "$manifest_dsh_version" ] || runner_die 'release version is empty'
+case "$manifest_node_bin" in
+  /*) ;;
+  *) runner_die 'Node path must be absolute' ;;
+esac
+[ -f "$manifest_node_bin" ] && [ -x "$manifest_node_bin" ] || runner_die 'Node executable is unavailable'
+case "$manifest_cli_relative" in
+  ''|/*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|*//*) runner_die 'release CLI path is unsafe' ;;
+esac
+case "$manifest_installed_at" in
+  ''|*[!0-9]*) runner_die 'release installation time is malformed' ;;
+esac
+
+CLI_PATH="$RUN_DIR/$manifest_cli_relative"
+[ -f "$CLI_PATH" ] && [ ! -L "$CLI_PATH" ] || runner_die 'release CLI is unavailable'
+CLI_PARENT="$(CDPATH= cd -P -- "$(dirname -- "$CLI_PATH")" && pwd)" || runner_die 'release CLI parent is unavailable'
+case "$CLI_PARENT/" in
+  "$RUN_DIR/"*) ;;
+  *) runner_die 'release CLI escapes release directory' ;;
+esac
+CLI_PATH="$CLI_PARENT/$(basename -- "$CLI_PATH")"
+
+if [ "$RUN_MODE" = check ]; then
+  printf '%s\n' "$manifest_dsh_version"
+  exit 0
+fi
+[ -f "$RUN_DIR/.complete" ] && [ ! -L "$RUN_DIR/.complete" ] || {
+  printf 'dsh-mac: incomplete release\n' >&2
+  exit 1
+}
+exec "$manifest_node_bin" "$CLI_PATH" web \
+  --host 127.0.0.1 --port 3080

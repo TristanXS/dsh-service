@@ -41,6 +41,7 @@ init_paths() {
   ACTIVATION_FILE="$DSH_MAC_ROOT/activation.env"
   LOCK_DIR="$DSH_MAC_ROOT/.lock"
   WORKSPACE_DIR="$DSH_MAC_ROOT/workspace"
+  RUNNER_TEMPLATE="$DSH_MAC_ROOT/libexec/dsh-mac-run"
   CLI_DEST="$HOME/.local/bin/dsh-mac"
   PLIST_PATH="$HOME/Library/LaunchAgents/dev.dsh-mac.web.plist"
   LOG_DIR="$HOME/Library/Logs/dsh-mac"
@@ -401,9 +402,11 @@ resolve_external_command() {
   printf '%s\n' "$command_path"
 }
 
-preflight_install() {
-  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
-
+resolve_node_and_npm() {
+  [ "$#" -eq 0 ] || {
+    die 'resolve_node_and_npm accepts no arguments'
+    return 1
+  }
   resolved_node=$(resolve_external_command node) || {
     die 'node must resolve to an absolute executable, not an alias or function'
     return 1
@@ -425,6 +428,370 @@ preflight_install() {
   NODE_BIN=$resolved_node
   NPM_BIN=$resolved_npm
   NODE_VERSION=$resolved_node_version
+}
+
+preflight_install() {
+  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  resolve_node_and_npm
+}
+
+resolve_latest_version() {
+  [ "$#" -eq 0 ] || {
+    die 'resolve_latest_version accepts no arguments'
+    return 1
+  }
+  [ -n "${NPM_BIN:-}" ] && [ -f "$NPM_BIN" ] && [ -x "$NPM_BIN" ] || {
+    die 'npm is unavailable'
+    return 1
+  }
+
+  resolved_latest_version=$("$NPM_BIN" view @deepseek-ai/dsh@latest version) || {
+    die 'could not resolve the latest DSH version'
+    return 1
+  }
+  case "$resolved_latest_version" in
+    ''|*[!0-9A-Za-z.-]*)
+      die 'latest DSH version is malformed'
+      return 1
+      ;;
+  esac
+  latest_version_pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+  [[ "$resolved_latest_version" =~ $latest_version_pattern ]] || {
+    die 'latest DSH version is malformed'
+    return 1
+  }
+
+  LATEST_VERSION=$resolved_latest_version
+}
+
+resolve_release_cli() {
+  [ "$#" -eq 2 ] || return 1
+  resolve_release_root=$1
+  resolve_cli_relative=$2
+  cli_relative_safe "$resolve_cli_relative" || return 1
+  [ -d "$resolve_release_root" ] && [ ! -L "$resolve_release_root" ] || return 1
+
+  resolved_release_root=$(CDPATH= cd -P -- "$resolve_release_root" && pwd) || return 1
+  cli_candidate="$resolved_release_root/$resolve_cli_relative"
+  [ -f "$cli_candidate" ] && [ ! -L "$cli_candidate" ] || return 1
+  cli_parent=$(CDPATH= cd -P -- "$(dirname -- "$cli_candidate")" && pwd) || return 1
+  case "$cli_parent/" in
+    "$resolved_release_root/"*) ;;
+    *) return 1 ;;
+  esac
+
+  RESOLVED_CLI_ENTRY="$cli_parent/$(basename -- "$cli_candidate")"
+}
+
+validate_release() {
+  [ "$#" -eq 1 ] || {
+    die 'validate_release requires a release path'
+    return 1
+  }
+  release_path=$1
+  [ -d "$release_path" ] && [ ! -L "$release_path" ] || {
+    die 'release directory is unavailable'
+    return 1
+  }
+  [ -f "$release_path/.complete" ] && [ ! -L "$release_path/.complete" ] || {
+    die 'release is incomplete'
+    return 1
+  }
+  [ -f "$release_path/run" ] && [ -x "$release_path/run" ] && [ ! -L "$release_path/run" ] || {
+    die 'release runner is unavailable'
+    return 1
+  }
+
+  read_manifest "$release_path/manifest.env" || return 1
+  resolve_release_cli "$release_path" "$MANIFEST_CLI_RELATIVE" || {
+    die 'release CLI path is invalid'
+    return 1
+  }
+  release_cli_entry=$RESOLVED_CLI_ENTRY
+
+  runner_version=$("$release_path/run" --check) || {
+    die 'release runner validation failed'
+    return 1
+  }
+  [ "$runner_version" = "$MANIFEST_DSH_VERSION" ] || {
+    die 'release runner reported the wrong version'
+    return 1
+  }
+  cli_version_output=$("$MANIFEST_NODE_BIN" "$release_cli_entry" --version 2>&1) || {
+    die 'release CLI version probe failed'
+    return 1
+  }
+  case "$cli_version_output" in
+    *"$MANIFEST_DSH_VERSION"*) ;;
+    *)
+      die 'release CLI reported the wrong version'
+      return 1
+      ;;
+  esac
+}
+
+current_release_id() {
+  [ "$#" -eq 0 ] || return 1
+  [ -L "$CURRENT_LINK" ] || return 1
+  current_target=$(/usr/bin/readlink "$CURRENT_LINK") || return 1
+  case "$current_target" in
+    releases/*) current_id=${current_target#releases/} ;;
+    *) return 1 ;;
+  esac
+  validate_release_id "$current_id" || return 1
+  [ -d "$RELEASES_DIR/$current_id" ] || return 1
+  printf '%s\n' "$current_id"
+}
+
+atomic_release_link() {
+  [ "$#" -eq 2 ] || {
+    die 'atomic_release_link requires a link path and release ID'
+    return 1
+  }
+  link_path=$1
+  release_id=$2
+  case "$link_path" in
+    "$CURRENT_LINK"|"$PREVIOUS_LINK") ;;
+    *)
+      die 'release link path is not manager-owned'
+      return 1
+      ;;
+  esac
+  validate_release_id "$release_id" || {
+    die 'release ID is invalid'
+    return 1
+  }
+  [ -d "$RELEASES_DIR/$release_id" ] || {
+    die 'release directory does not exist'
+    return 1
+  }
+  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
+    die 'manager root is unavailable'
+    return 1
+  }
+
+  link_serial=$$
+  link_tmp="$DSH_MAC_ROOT/.release-link-$link_serial"
+  while [ -e "$link_tmp" ] || [ -L "$link_tmp" ]; do
+    link_serial=$((link_serial + 1))
+    link_tmp="$DSH_MAC_ROOT/.release-link-$link_serial"
+  done
+  /bin/ln -s "releases/$release_id" "$link_tmp" || {
+    die 'could not create temporary release link'
+    return 1
+  }
+  if ! /bin/mv -f "$link_tmp" "$link_path"; then
+    /bin/rm -f -- "$link_tmp"
+    die 'could not publish release link'
+    return 1
+  fi
+}
+
+current_matches() {
+  [ "$#" -eq 1 ] || return 1
+  wanted_version=$1
+  matching_release_id=$(current_release_id) || return 1
+  matching_release_path="$RELEASES_DIR/$matching_release_id"
+  validate_release "$matching_release_path" || return 1
+  [ "$MANIFEST_DSH_VERSION" = "$wanted_version" ] || return 1
+  printf '%s\n' "$matching_release_id"
+}
+
+remove_staging_release() {
+  [ "$#" -eq 1 ] || return 1
+  case "$1" in
+    "$RELEASES_DIR"/.staging-*) /bin/rm -rf -- "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+stage_release() {
+  [ "$#" -eq 0 ] || {
+    die 'stage_release accepts no arguments'
+    return 1
+  }
+  resolve_latest_version || return 1
+
+  matching_release=$(current_matches "$LATEST_VERSION" 2>/dev/null) && {
+    STAGED_RELEASE_ID=$matching_release
+    STAGED_RELEASE_PATH="$RELEASES_DIR/$matching_release"
+    return 0
+  }
+
+  [ -n "${NODE_BIN:-}" ] && [ -f "$NODE_BIN" ] && [ -x "$NODE_BIN" ] || {
+    die 'Node.js is unavailable'
+    return 1
+  }
+  [ -f "$RUNNER_TEMPLATE" ] && [ -x "$RUNNER_TEMPLATE" ] && [ ! -L "$RUNNER_TEMPLATE" ] || {
+    die 'manager-owned runner template is unavailable'
+    return 1
+  }
+  /bin/mkdir -p "$RELEASES_DIR" || {
+    die 'could not create releases directory'
+    return 1
+  }
+  [ ! -L "$RELEASES_DIR" ] || {
+    die 'releases directory must not be a symlink'
+    return 1
+  }
+
+  installed_at=$(/bin/date +%s) || {
+    die 'could not read installation time'
+    return 1
+  }
+  release_serial=$$
+  while :; do
+    release_id="$LATEST_VERSION-$installed_at-$release_serial"
+    validate_release_id "$release_id" || {
+      die 'could not create a valid release ID'
+      return 1
+    }
+    final_release="$RELEASES_DIR/$release_id"
+    staging_release="$RELEASES_DIR/.staging-$installed_at-$release_serial"
+    if [ ! -e "$final_release" ] && [ ! -L "$final_release" ] &&
+      [ ! -e "$staging_release" ] && [ ! -L "$staging_release" ]; then
+      break
+    fi
+    release_serial=$((release_serial + 1))
+  done
+
+  /bin/mkdir "$staging_release" || {
+    die 'could not create staging directory'
+    return 1
+  }
+
+  if ! "$NPM_BIN" install --prefix "$staging_release" "@deepseek-ai/dsh@$LATEST_VERSION" \
+    --no-save --package-lock=false --omit=dev --no-audit --no-fund; then
+    remove_staging_release "$staging_release" || :
+    die 'could not install DSH release'
+    return 1
+  fi
+  [ ! -e "$staging_release/package-lock.json" ] || {
+    remove_staging_release "$staging_release" || :
+    die 'npm created an unexpected package lock'
+    return 1
+  }
+
+  package_json="$staging_release/node_modules/@deepseek-ai/dsh/package.json"
+  [ -f "$package_json" ] && [ ! -L "$package_json" ] || {
+    remove_staging_release "$staging_release" || :
+    die 'installed DSH package metadata is unavailable'
+    return 1
+  }
+  package_metadata=$("$NODE_BIN" -e '
+const fs = require("fs");
+const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (typeof pkg.version !== "string" || !pkg.bin || typeof pkg.bin.dsh !== "string") process.exit(1);
+process.stdout.write(pkg.version + "\n" + pkg.bin.dsh + "\n");
+' "$package_json") || {
+    remove_staging_release "$staging_release" || :
+    die 'could not read installed DSH package metadata'
+    return 1
+  }
+  metadata_newline='
+'
+  case "$package_metadata" in
+    *"$metadata_newline"*) ;;
+    *)
+      remove_staging_release "$staging_release" || :
+      die 'installed DSH package metadata is malformed'
+      return 1
+      ;;
+  esac
+  installed_version=${package_metadata%%"$metadata_newline"*}
+  package_cli=${package_metadata#*"$metadata_newline"}
+  case "$package_cli" in
+    *"$metadata_newline"*|'')
+      remove_staging_release "$staging_release" || :
+      die 'installed DSH package metadata is malformed'
+      return 1
+      ;;
+  esac
+  [ "$installed_version" = "$LATEST_VERSION" ] || {
+    remove_staging_release "$staging_release" || :
+    die 'installed DSH package version does not match latest'
+    return 1
+  }
+  while case "$package_cli" in ./*) true ;; *) false ;; esac; do
+    package_cli=${package_cli#./}
+  done
+  cli_relative="node_modules/@deepseek-ai/dsh/$package_cli"
+  cli_relative_safe "$cli_relative" || {
+    remove_staging_release "$staging_release" || :
+    die 'installed DSH CLI path is unsafe'
+    return 1
+  }
+  resolve_release_cli "$staging_release" "$cli_relative" || {
+    remove_staging_release "$staging_release" || :
+    die 'installed DSH CLI escapes staging'
+    return 1
+  }
+  staged_cli_entry=$RESOLVED_CLI_ENTRY
+
+  manifest_tmp="$staging_release/.manifest-$release_serial"
+  if ! (
+    umask 077
+    {
+      printf 'SCHEMA_VERSION=1\n'
+      printf 'DSH_VERSION=%s\n' "$installed_version"
+      printf 'NODE_BIN=%s\n' "$NODE_BIN"
+      printf 'CLI_RELATIVE=%s\n' "$cli_relative"
+      printf 'INSTALLED_AT=%s\n' "$installed_at"
+    } >"$manifest_tmp"
+  ); then
+    remove_staging_release "$staging_release" || :
+    die 'could not write release manifest'
+    return 1
+  fi
+  if ! /bin/mv "$manifest_tmp" "$staging_release/manifest.env"; then
+    remove_staging_release "$staging_release" || :
+    die 'could not publish release manifest'
+    return 1
+  fi
+  if ! /bin/cp "$RUNNER_TEMPLATE" "$staging_release/run" ||
+    ! /bin/chmod 0755 "$staging_release/run"; then
+    remove_staging_release "$staging_release" || :
+    die 'could not install release runner'
+    return 1
+  fi
+
+  staged_runner_version=$("$staging_release/run" --check) || {
+    remove_staging_release "$staging_release" || :
+    die 'staged runner validation failed'
+    return 1
+  }
+  [ "$staged_runner_version" = "$installed_version" ] || {
+    remove_staging_release "$staging_release" || :
+    die 'staged runner reported the wrong version'
+    return 1
+  }
+  staged_cli_output=$("$NODE_BIN" "$staged_cli_entry" --version 2>&1) || {
+    remove_staging_release "$staging_release" || :
+    die 'staged DSH version probe failed'
+    return 1
+  }
+  case "$staged_cli_output" in
+    *"$installed_version"*) ;;
+    *)
+      remove_staging_release "$staging_release" || :
+      die 'staged DSH reported the wrong version'
+      return 1
+      ;;
+  esac
+
+  : >"$staging_release/.complete" || {
+    remove_staging_release "$staging_release" || :
+    die 'could not mark staged release complete'
+    return 1
+  }
+  if ! /bin/mv "$staging_release" "$final_release"; then
+    remove_staging_release "$staging_release" || :
+    die 'could not publish staged release'
+    return 1
+  fi
+
+  STAGED_RELEASE_ID=$release_id
+  STAGED_RELEASE_PATH=$final_release
 }
 
 read_lock_owner() {
