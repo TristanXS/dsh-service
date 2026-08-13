@@ -1,0 +1,566 @@
+#!/bin/bash
+set -u
+
+MANAGER_VERSION=0.1.0
+
+die() {
+  printf 'dsh-mac: error: %s\n' "$*" >&2
+  return 1
+}
+
+note() {
+  printf 'dsh-mac: %s\n' "$*" >&2
+}
+
+init_command_paths() {
+  LAUNCHCTL_BIN=/bin/launchctl
+  PLUTIL_BIN=/usr/bin/plutil
+  LSOF_BIN=/usr/sbin/lsof
+  CURL_BIN=/usr/bin/curl
+  OPEN_BIN=/usr/bin/open
+  TAIL_BIN=/usr/bin/tail
+  WAIT_ATTEMPTS=30
+  WAIT_INTERVAL=1
+  if [ "${DSH_MAC_TESTING:-0}" = 1 ]; then
+    LAUNCHCTL_BIN="${DSH_MAC_LAUNCHCTL_BIN:-$LAUNCHCTL_BIN}"
+    PLUTIL_BIN="${DSH_MAC_PLUTIL_BIN:-$PLUTIL_BIN}"
+    LSOF_BIN="${DSH_MAC_LSOF_BIN:-$LSOF_BIN}"
+    CURL_BIN="${DSH_MAC_CURL_BIN:-$CURL_BIN}"
+    OPEN_BIN="${DSH_MAC_OPEN_BIN:-$OPEN_BIN}"
+    TAIL_BIN="${DSH_MAC_TAIL_BIN:-$TAIL_BIN}"
+    WAIT_ATTEMPTS="${DSH_MAC_WAIT_ATTEMPTS:-3}"
+    WAIT_INTERVAL="${DSH_MAC_WAIT_INTERVAL:-0}"
+  fi
+}
+
+init_paths() {
+  DSH_MAC_ROOT="$HOME/Library/Application Support/dsh-mac"
+  RELEASES_DIR="$DSH_MAC_ROOT/releases"
+  CURRENT_LINK="$DSH_MAC_ROOT/current"
+  PREVIOUS_LINK="$DSH_MAC_ROOT/previous"
+  ACTIVATION_FILE="$DSH_MAC_ROOT/activation.env"
+  LOCK_DIR="$DSH_MAC_ROOT/.lock"
+  WORKSPACE_DIR="$DSH_MAC_ROOT/workspace"
+  CLI_DEST="$HOME/.local/bin/dsh-mac"
+  PLIST_PATH="$HOME/Library/LaunchAgents/dev.dsh-mac.web.plist"
+  LOG_DIR="$HOME/Library/Logs/dsh-mac"
+  SERVICE_TARGET="gui/$(/usr/bin/id -u)/dev.dsh-mac.web"
+}
+
+node_version_supported() {
+  [ "$#" -eq 1 ] || return 1
+
+  version=$1
+  case "$version" in
+    *.*.*) ;;
+    *) return 1 ;;
+  esac
+
+  major=${version%%.*}
+  remainder=${version#*.}
+  minor=${remainder%%.*}
+  patch=${remainder#*.}
+
+  case "$patch" in
+    *.*) return 1 ;;
+  esac
+  case "$major" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  case "$minor" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  case "$patch" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  while [ "${major#0}" != "$major" ]; do
+    major=${major#0}
+  done
+  while [ "${minor#0}" != "$minor" ]; do
+    minor=${minor#0}
+  done
+  major=${major:-0}
+  minor=${minor:-0}
+
+  case ${#major} in
+    1) return 1 ;;
+    2)
+      case "$major" in
+        22)
+          case ${#minor} in
+            1) return 1 ;;
+            2)
+              case "$minor" in
+                1[9]|[2-9][0-9]) return 0 ;;
+                *) return 1 ;;
+              esac
+              ;;
+            *) return 0 ;;
+          esac
+          ;;
+        23) return 1 ;;
+        2[4-9]|[3-9][0-9]) return 0 ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_release_id() {
+  [ "$#" -eq 1 ] || return 1
+  release_id_pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?-[0-9]+-[0-9]+$'
+  [[ "$1" =~ $release_id_pattern ]]
+}
+
+cli_relative_safe() {
+  [ "$#" -eq 1 ] || return 1
+  case "$1" in
+    ''|/*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|*//* ) return 1 ;;
+  esac
+  return 0
+}
+
+read_manifest() {
+  [ "$#" -eq 1 ] || {
+    die 'read_manifest requires a path'
+    return 1
+  }
+  manifest_path=$1
+  [ -r "$manifest_path" ] || {
+    die "cannot read manifest: $manifest_path"
+    return 1
+  }
+
+  manifest_schema=
+  manifest_dsh_version=
+  manifest_node_bin=
+  manifest_cli_relative=
+  manifest_installed_at=
+  seen_schema=0
+  seen_dsh_version=0
+  seen_node_bin=0
+  seen_cli_relative=0
+  seen_installed_at=0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *=*) ;;
+      *)
+        die "malformed manifest line: $line"
+        return 1
+        ;;
+    esac
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      SCHEMA_VERSION)
+        [ "$seen_schema" -eq 0 ] || {
+          die 'duplicate manifest key: SCHEMA_VERSION'
+          return 1
+        }
+        seen_schema=1
+        manifest_schema=$value
+        ;;
+      DSH_VERSION)
+        [ "$seen_dsh_version" -eq 0 ] || {
+          die 'duplicate manifest key: DSH_VERSION'
+          return 1
+        }
+        seen_dsh_version=1
+        manifest_dsh_version=$value
+        ;;
+      NODE_BIN)
+        [ "$seen_node_bin" -eq 0 ] || {
+          die 'duplicate manifest key: NODE_BIN'
+          return 1
+        }
+        seen_node_bin=1
+        manifest_node_bin=$value
+        ;;
+      CLI_RELATIVE)
+        [ "$seen_cli_relative" -eq 0 ] || {
+          die 'duplicate manifest key: CLI_RELATIVE'
+          return 1
+        }
+        seen_cli_relative=1
+        manifest_cli_relative=$value
+        ;;
+      INSTALLED_AT)
+        [ "$seen_installed_at" -eq 0 ] || {
+          die 'duplicate manifest key: INSTALLED_AT'
+          return 1
+        }
+        seen_installed_at=1
+        manifest_installed_at=$value
+        ;;
+      *)
+        die "unknown manifest key: $key"
+        return 1
+        ;;
+    esac
+  done <"$manifest_path"
+
+  [ "$seen_schema" -eq 1 ] &&
+    [ "$seen_dsh_version" -eq 1 ] &&
+    [ "$seen_node_bin" -eq 1 ] &&
+    [ "$seen_cli_relative" -eq 1 ] &&
+    [ "$seen_installed_at" -eq 1 ] || {
+      die 'manifest is missing required keys'
+      return 1
+    }
+  [ "$manifest_schema" = 1 ] || {
+    die 'unsupported manifest schema'
+    return 1
+  }
+  [ -n "$manifest_dsh_version" ] || {
+    die 'manifest DSH_VERSION is empty'
+    return 1
+  }
+  case "$manifest_node_bin" in
+    /*) ;;
+    *)
+      die 'manifest NODE_BIN must be absolute'
+      return 1
+      ;;
+  esac
+  [ -x "$manifest_node_bin" ] || {
+    die 'manifest NODE_BIN must be executable'
+    return 1
+  }
+  cli_relative_safe "$manifest_cli_relative" || {
+    die 'manifest CLI_RELATIVE is unsafe'
+    return 1
+  }
+  case "$manifest_installed_at" in
+    ''|*[!0-9]*)
+      die 'manifest INSTALLED_AT must be numeric'
+      return 1
+      ;;
+  esac
+
+  MANIFEST_SCHEMA_VERSION=$manifest_schema
+  MANIFEST_DSH_VERSION=$manifest_dsh_version
+  MANIFEST_NODE_BIN=$manifest_node_bin
+  MANIFEST_CLI_RELATIVE=$manifest_cli_relative
+  MANIFEST_INSTALLED_AT=$manifest_installed_at
+}
+
+read_activation() {
+  activation_path=${1:-$ACTIVATION_FILE}
+  [ "$#" -le 1 ] || {
+    die 'read_activation accepts at most one path'
+    return 1
+  }
+  [ -r "$activation_path" ] || {
+    die "cannot read activation: $activation_path"
+    return 1
+  }
+
+  activation_schema=
+  activation_old_release=
+  activation_candidate_release=
+  seen_schema=0
+  seen_old_release=0
+  seen_candidate_release=0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *=*) ;;
+      *)
+        die "malformed activation line: $line"
+        return 1
+        ;;
+    esac
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      SCHEMA_VERSION)
+        [ "$seen_schema" -eq 0 ] || {
+          die 'duplicate activation key: SCHEMA_VERSION'
+          return 1
+        }
+        seen_schema=1
+        activation_schema=$value
+        ;;
+      OLD_RELEASE)
+        [ "$seen_old_release" -eq 0 ] || {
+          die 'duplicate activation key: OLD_RELEASE'
+          return 1
+        }
+        seen_old_release=1
+        activation_old_release=$value
+        ;;
+      CANDIDATE_RELEASE)
+        [ "$seen_candidate_release" -eq 0 ] || {
+          die 'duplicate activation key: CANDIDATE_RELEASE'
+          return 1
+        }
+        seen_candidate_release=1
+        activation_candidate_release=$value
+        ;;
+      *)
+        die "unknown activation key: $key"
+        return 1
+        ;;
+    esac
+  done <"$activation_path"
+
+  [ "$seen_schema" -eq 1 ] &&
+    [ "$seen_old_release" -eq 1 ] &&
+    [ "$seen_candidate_release" -eq 1 ] || {
+      die 'activation is missing required keys'
+      return 1
+    }
+  [ "$activation_schema" = 1 ] || {
+    die 'unsupported activation schema'
+    return 1
+  }
+  if [ "$activation_old_release" != NONE ]; then
+    validate_release_id "$activation_old_release" || {
+      die 'activation OLD_RELEASE is invalid'
+      return 1
+    }
+  fi
+  validate_release_id "$activation_candidate_release" || {
+    die 'activation CANDIDATE_RELEASE is invalid'
+    return 1
+  }
+
+  ACTIVATION_SCHEMA_VERSION=$activation_schema
+  ACTIVATION_OLD_RELEASE=$activation_old_release
+  ACTIVATION_CANDIDATE_RELEASE=$activation_candidate_release
+}
+
+preflight_common() {
+  [ "$(/usr/bin/uname -s 2>/dev/null)" = Darwin ] || {
+    die 'macOS is required'
+    return 1
+  }
+  case "$HOME" in
+    '')
+      die 'HOME must not be empty'
+      return 1
+      ;;
+    /*) ;;
+    *)
+      die 'HOME must be absolute'
+      return 1
+      ;;
+  esac
+  case "$HOME" in
+    *"
+"*)
+      die 'HOME must not contain a newline'
+      return 1
+      ;;
+  esac
+  case "$LAUNCHCTL_BIN" in
+    /*) ;;
+    *)
+      die 'launchctl path must be absolute'
+      return 1
+      ;;
+  esac
+  [ -x "$LAUNCHCTL_BIN" ] || {
+    die 'launchctl is unavailable'
+    return 1
+  }
+  "$LAUNCHCTL_BIN" print "gui/$(/usr/bin/id -u)" >/dev/null 2>&1 || {
+    die 'launchd GUI domain is unavailable'
+    return 1
+  }
+
+  for command_path in "$@"; do
+    case "$command_path" in
+      /*) ;;
+      *)
+        die "command path must be absolute: $command_path"
+        return 1
+        ;;
+    esac
+    [ -x "$command_path" ] || {
+      die "required command is unavailable: $command_path"
+      return 1
+    }
+  done
+}
+
+resolve_external_command() {
+  [ "$#" -eq 1 ] || return 1
+  command_name=$1
+  command_kind=$(type -t "$command_name" 2>/dev/null) || return 1
+  [ "$command_kind" = file ] || return 1
+  command_path=$(command -v "$command_name" 2>/dev/null) || return 1
+  case "$command_path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -x "$command_path" ] || return 1
+  printf '%s\n' "$command_path"
+}
+
+preflight_install() {
+  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" || return 1
+
+  resolved_node=$(resolve_external_command node) || {
+    die 'node must resolve to an absolute executable, not an alias or function'
+    return 1
+  }
+  resolved_npm=$(resolve_external_command npm) || {
+    die 'npm must resolve to an absolute executable, not an alias or function'
+    return 1
+  }
+  raw_node_version=$("$resolved_node" --version 2>/dev/null) || {
+    die 'could not read the Node.js version'
+    return 1
+  }
+  resolved_node_version=${raw_node_version#v}
+  node_version_supported "$resolved_node_version" || {
+    die "unsupported Node.js version: $raw_node_version"
+    return 1
+  }
+
+  NODE_BIN=$resolved_node
+  NPM_BIN=$resolved_npm
+  NODE_VERSION=$resolved_node_version
+}
+
+read_lock_owner() {
+  [ -f "$LOCK_DIR/pid" ] || return 1
+  lock_owner=
+  lock_owner_lines=0
+  while IFS= read -r lock_owner_line || [ -n "$lock_owner_line" ]; do
+    lock_owner=$lock_owner_line
+    lock_owner_lines=$((lock_owner_lines + 1))
+  done <"$LOCK_DIR/pid"
+  [ "$lock_owner_lines" -eq 1 ] || return 1
+  case "$lock_owner" in
+    ''|0|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$lock_owner"
+}
+
+release_lock_if_owned() {
+  [ -d "$LOCK_DIR" ] || return 0
+  [ ! -L "$LOCK_DIR" ] || return 0
+  current_owner=$(read_lock_owner) || return 0
+  [ "$current_owner" = "$$" ] || return 0
+  /bin/rm -f -- "$LOCK_DIR/pid" || return 0
+  /bin/rmdir -- "$LOCK_DIR" 2>/dev/null || return 0
+}
+
+release_lock() {
+  [ -d "$LOCK_DIR" ] || {
+    die 'operation lock does not exist'
+    return 1
+  }
+  [ ! -L "$LOCK_DIR" ] || {
+    die 'operation lock must not be a symlink'
+    return 1
+  }
+  current_owner=$(read_lock_owner) || {
+    die 'operation lock owner is malformed'
+    return 1
+  }
+  [ "$current_owner" = "$$" ] || {
+    die 'operation lock is owned by another process'
+    return 1
+  }
+  /bin/rm -f -- "$LOCK_DIR/pid" || {
+    die 'could not remove operation lock owner file'
+    return 1
+  }
+  /bin/rmdir -- "$LOCK_DIR" || {
+    die 'could not remove operation lock directory'
+    return 1
+  }
+}
+
+acquire_lock() {
+  if /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
+    if printf '%s\n' "$$" >"$LOCK_DIR/pid"; then
+      trap 'release_lock_if_owned' EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      return 0
+    fi
+    /bin/rmdir -- "$LOCK_DIR" 2>/dev/null || :
+    die 'could not record operation lock owner'
+    return 1
+  fi
+
+  [ -d "$LOCK_DIR" ] || {
+    die 'could not create operation lock'
+    return 1
+  }
+  [ ! -L "$LOCK_DIR" ] || {
+    die 'operation lock must not be a symlink'
+    return 1
+  }
+  stale_owner=$(read_lock_owner) || {
+    die 'operation lock owner is missing or malformed'
+    return 1
+  }
+  if kill -0 "$stale_owner" 2>/dev/null; then
+    die "another dsh-mac operation is running (pid $stale_owner)"
+    return 1
+  fi
+
+  current_owner=$(read_lock_owner) || {
+    die 'operation lock changed while checking its owner'
+    return 1
+  }
+  [ "$current_owner" = "$stale_owner" ] || {
+    die 'operation lock changed while checking its owner'
+    return 1
+  }
+  /bin/rm -f -- "$LOCK_DIR/pid" || {
+    die 'could not remove stale operation lock owner file'
+    return 1
+  }
+  /bin/rmdir -- "$LOCK_DIR" || {
+    die 'could not remove stale operation lock directory'
+    return 1
+  }
+  /bin/mkdir "$LOCK_DIR" 2>/dev/null || {
+    die 'operation lock was acquired by another process'
+    return 1
+  }
+  if printf '%s\n' "$$" >"$LOCK_DIR/pid"; then
+    trap 'release_lock_if_owned' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    return 0
+  fi
+  /bin/rmdir -- "$LOCK_DIR" 2>/dev/null || :
+  die 'could not record operation lock owner'
+  return 1
+}
+
+main() {
+  command_name=${1:-}
+  case "$command_name" in
+    version)
+      [ "$#" -eq 1 ] || {
+        die 'usage: dsh-mac version'
+        return 1
+      }
+      printf '%s\n' "$MANAGER_VERSION"
+      ;;
+    *)
+      die 'usage: dsh-mac version'
+      return 1
+      ;;
+  esac
+}
+
+init_command_paths
+init_paths
+
+if [ "${DSH_MAC_SOURCE_ONLY:-0}" = 1 ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+main "$@"
