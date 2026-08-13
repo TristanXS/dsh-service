@@ -145,15 +145,20 @@ printf "@deepseek-ai/dsh %s\n" "$version"'
 
   write_fake npm '
 printf "%s\n" "$*" >>"$DSH_TEST_NPM_LOG"
-[ "${DSH_TEST_NPM_FAIL:-0}" != 1 ] || exit 69
 if [ "${1:-}" = view ]; then
   [ "$#" -eq 3 ] && [ "$2" = @deepseek-ai/dsh@latest ] && [ "$3" = version ] || exit 70
   manager_root="$HOME/Library/Application Support/dsh-mac"
   [ -f "$manager_root/.lock/pid" ] || exit 71
+  [ "${DSH_TEST_NPM_VIEW_FAIL:-0}" != 1 ] || exit 69
   printf "%s\n" "${DSH_TEST_LATEST_VERSION:-1.2.3}"
   exit 0
 fi
 [ "${1:-}" = install ] || exit 72
+[ "${DSH_TEST_NPM_INSTALL_FAIL:-0}" != 1 ] || exit 69
+if [ -n "${DSH_TEST_NPM_SIGNAL:-}" ]; then
+  kill -"$DSH_TEST_NPM_SIGNAL" "$PPID" || exit 75
+  exit 69
+fi
 shift
 install_prefix=
 package_spec=
@@ -182,7 +187,7 @@ prepare_install_case() {
   : >"$DSH_TEST_NPM_LOG"
   export DSH_TEST_LATEST_VERSION=1.2.3
   export DSH_TEST_NODE_VERSION=v22.19.0
-  unset DSH_TEST_NPM_FAIL
+  unset DSH_TEST_NPM_VIEW_FAIL DSH_TEST_NPM_INSTALL_FAIL DSH_TEST_NPM_SIGNAL
   export PATH="$TEST_ROOT/bin:/usr/bin:/bin"
 }
 
@@ -198,6 +203,29 @@ release_count() {
     count=$((count + 1))
   done
   printf '%s\n' "$count"
+}
+
+assert_no_install_transaction_artifacts() {
+  for transaction_parent in \
+    "$HOME/.local/bin" \
+    "$HOME/Library/Application Support/dsh-mac/libexec"; do
+    [ -d "$transaction_parent" ] || continue
+    for transaction_path in "$transaction_parent"/.dsh-mac-*; do
+      [ ! -e "$transaction_path" ] && [ ! -L "$transaction_path" ] || {
+        printf 'unexpected manager transaction artifact: %s\n' "$transaction_path" >&2
+        return 1
+      }
+    done
+  done
+  releases="$HOME/Library/Application Support/dsh-mac/releases"
+  if [ -d "$releases" ]; then
+    for staging_path in "$releases"/.staging-*; do
+      [ ! -e "$staging_path" ] && [ ! -L "$staging_path" ] || {
+        printf 'unexpected staging artifact: %s\n' "$staging_path" >&2
+        return 1
+      }
+    done
+  fi
 }
 
 make_status_release() {
@@ -372,7 +400,7 @@ test_install_atomically_publishes_executable_cli_and_runner() {
 
 test_failed_first_install_removes_new_manager_files_and_empty_root() {
   prepare_install_case install-first-failure || return 1
-  export DSH_TEST_NPM_FAIL=1
+  export DSH_TEST_NPM_VIEW_FAIL=1
 
   run_cli install
 
@@ -390,7 +418,7 @@ test_failed_install_restores_both_older_manager_files() {
   printf 'older cli\n' >"$installed_cli" || return 1
   printf 'older runner\n' >"$installed_runner" || return 1
   /bin/chmod 0755 "$installed_cli" "$installed_runner" || return 1
-  export DSH_TEST_NPM_FAIL=1
+  export DSH_TEST_NPM_INSTALL_FAIL=1
 
   run_cli install
 
@@ -398,7 +426,98 @@ test_failed_install_restores_both_older_manager_files() {
   assert_eq 'older cli' "$(<"$installed_cli")" || return 1
   assert_eq 'older runner' "$(<"$installed_runner")" || return 1
   [ -x "$installed_cli" ] && [ -x "$installed_runner" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-mac/releases" ] || return 1
+  assert_no_install_transaction_artifacts || return 1
   [ ! -e "$HOME/Library/Application Support/dsh-mac/.lock" ]
+}
+
+test_true_npm_install_failure_removes_every_new_empty_install_directory() {
+  prepare_install_case install-npm-failure-cleanup || return 1
+  export DSH_TEST_NPM_INSTALL_FAIL=1
+
+  run_cli install
+
+  assert_eq 1 "$CLI_STATUS" || return 1
+  assert_eq 2 "$(wc -l <"$DSH_TEST_NPM_LOG" | tr -d ' ')" || return 1
+  [ ! -e "$HOME/.local" ] || return 1
+  [ ! -e "$HOME/Library" ] || return 1
+  assert_no_install_transaction_artifacts
+}
+
+test_term_during_stage_restores_both_older_manager_files_and_lock() {
+  prepare_install_case install-term-restore || return 1
+  installed_cli="$HOME/.local/bin/dsh-mac"
+  installed_runner="$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run"
+  /bin/mkdir -p "${installed_cli%/*}" "${installed_runner%/*}" || return 1
+  printf 'older cli before TERM\n' >"$installed_cli" || return 1
+  printf 'older runner before TERM\n' >"$installed_runner" || return 1
+  /bin/chmod 0755 "$installed_cli" "$installed_runner" || return 1
+  cli_identity=$(/usr/bin/stat -f '%i:%Lp' "$installed_cli") || return 1
+  runner_identity=$(/usr/bin/stat -f '%i:%Lp' "$installed_runner") || return 1
+  export DSH_TEST_NPM_SIGNAL=TERM
+
+  run_cli install
+
+  assert_eq 143 "$CLI_STATUS" || return 1
+  assert_eq 'older cli before TERM' "$(<"$installed_cli")" || return 1
+  assert_eq 'older runner before TERM' "$(<"$installed_runner")" || return 1
+  assert_eq "$cli_identity" "$(/usr/bin/stat -f '%i:%Lp' "$installed_cli")" || return 1
+  assert_eq "$runner_identity" "$(/usr/bin/stat -f '%i:%Lp' "$installed_runner")" || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-mac/.lock" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-mac/releases" ] || return 1
+  assert_no_install_transaction_artifacts
+}
+
+test_term_during_first_install_removes_manager_files_and_new_directories() {
+  prepare_install_case install-term-first || return 1
+  export DSH_TEST_NPM_SIGNAL=TERM
+
+  run_cli install
+
+  assert_eq 143 "$CLI_STATUS" || return 1
+  [ ! -e "$HOME/.local" ] || return 1
+  [ ! -e "$HOME/Library" ] || return 1
+  assert_no_install_transaction_artifacts
+}
+
+test_cli_destination_directory_is_rejected_before_external_preflight() {
+  prepare_install_case install-cli-directory || return 1
+  cli_destination="$HOME/.local/bin/dsh-mac"
+  /bin/mkdir -p "$cli_destination" || return 1
+  printf 'cli directory marker\n' >"$cli_destination/marker" || return 1
+  before=$(home_inventory) || return 1
+  identity=$(/usr/bin/stat -f '%HT:%i:%m' "$cli_destination") || return 1
+
+  run_cli install
+
+  assert_eq 1 "$CLI_STATUS" || return 1
+  assert_eq "$before" "$(home_inventory)" || return 1
+  assert_eq "$identity" "$(/usr/bin/stat -f '%HT:%i:%m' "$cli_destination")" || return 1
+  assert_eq 'cli directory marker' "$(<"$cli_destination/marker")" || return 1
+  assert_eq '' "$(<"$DSH_TEST_COMMAND_LOG")" || return 1
+  assert_eq '' "$(<"$DSH_TEST_NPM_LOG")" || return 1
+  assert_eq '' "$(<"$DSH_TEST_OPEN_LOG")" || return 1
+  assert_no_install_transaction_artifacts
+}
+
+test_runner_destination_directory_is_rejected_before_external_preflight() {
+  prepare_install_case install-runner-directory || return 1
+  runner_destination="$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run"
+  /bin/mkdir -p "$runner_destination" || return 1
+  printf 'runner directory marker\n' >"$runner_destination/marker" || return 1
+  before=$(home_inventory) || return 1
+  identity=$(/usr/bin/stat -f '%HT:%i:%m' "$runner_destination") || return 1
+
+  run_cli install
+
+  assert_eq 1 "$CLI_STATUS" || return 1
+  assert_eq "$before" "$(home_inventory)" || return 1
+  assert_eq "$identity" "$(/usr/bin/stat -f '%HT:%i:%m' "$runner_destination")" || return 1
+  assert_eq 'runner directory marker' "$(<"$runner_destination/marker")" || return 1
+  assert_eq '' "$(<"$DSH_TEST_COMMAND_LOG")" || return 1
+  assert_eq '' "$(<"$DSH_TEST_NPM_LOG")" || return 1
+  assert_eq '' "$(<"$DSH_TEST_OPEN_LOG")" || return 1
+  assert_no_install_transaction_artifacts
 }
 
 test_manager_staging_failure_preserves_both_older_files() {
@@ -604,6 +723,11 @@ run_test 'install completes full preflight before mutation' test_install_finishe
 run_test 'install atomically publishes executable CLI and runner' test_install_atomically_publishes_executable_cli_and_runner
 run_test 'failed first install removes manager files and empty root' test_failed_first_install_removes_new_manager_files_and_empty_root
 run_test 'failed install restores both older manager files' test_failed_install_restores_both_older_manager_files
+run_test 'true npm install failure removes every new empty install directory' test_true_npm_install_failure_removes_every_new_empty_install_directory
+run_test 'TERM during staging restores both older manager files and lock' test_term_during_stage_restores_both_older_manager_files_and_lock
+run_test 'TERM during first install removes manager files and new directories' test_term_during_first_install_removes_manager_files_and_new_directories
+run_test 'CLI destination directory is rejected before external preflight' test_cli_destination_directory_is_rejected_before_external_preflight
+run_test 'runner destination directory is rejected before external preflight' test_runner_destination_directory_is_rejected_before_external_preflight
 run_test 'manager staging failure preserves both older files' test_manager_staging_failure_preserves_both_older_files
 run_test 'repeated installed install reuses release and preserves PID' test_repeated_installed_install_reuses_release_and_preserves_pid
 run_test 'install prints a PATH hint without editing profiles' test_install_prints_path_hint_without_editing_profiles

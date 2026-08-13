@@ -1139,9 +1139,47 @@ resolve_node_and_npm() {
 }
 
 preflight_install() {
+  preflight_manager_destinations || return 1
   preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
   resolve_node_and_npm || return 1
   resolve_manager_sources
+}
+
+validate_optional_install_directory() {
+  [ "$#" -eq 1 ] || return 1
+  local install_directory
+  install_directory=$1
+  if [ -e "$install_directory" ] || [ -L "$install_directory" ]; then
+    [ -d "$install_directory" ] && [ ! -L "$install_directory" ] || {
+      die "install parent must be a physical directory: $install_directory"
+      return 1
+    }
+  fi
+}
+
+validate_optional_manager_file() {
+  [ "$#" -eq 1 ] || return 1
+  local manager_file
+  manager_file=$1
+  if [ -e "$manager_file" ] || [ -L "$manager_file" ]; then
+    [ -f "$manager_file" ] && [ ! -L "$manager_file" ] || {
+      die "manager destination must be a physical regular file: $manager_file"
+      return 1
+    }
+  fi
+}
+
+preflight_manager_destinations() {
+  [ "$#" -eq 0 ] || return 1
+  validate_optional_install_directory "$HOME" || return 1
+  validate_optional_install_directory "$HOME/.local" || return 1
+  validate_optional_install_directory "${CLI_DEST%/*}" || return 1
+  validate_optional_install_directory "$HOME/Library" || return 1
+  validate_optional_install_directory "$HOME/Library/Application Support" || return 1
+  validate_optional_install_directory "$DSH_MAC_ROOT" || return 1
+  validate_optional_install_directory "${RUNNER_TEMPLATE%/*}" || return 1
+  validate_optional_manager_file "$CLI_DEST" || return 1
+  validate_optional_manager_file "$RUNNER_TEMPLATE"
 }
 
 resolve_manager_sources() {
@@ -1403,7 +1441,12 @@ current_matches() {
 remove_staging_release() {
   [ "$#" -eq 1 ] || return 1
   case "$1" in
-    "$RELEASES_DIR"/.staging-*) /bin/rm -rf -- "$1" ;;
+    "$RELEASES_DIR"/.staging-*)
+      /bin/rm -rf -- "$1" || return 1
+      if [ "${ACTIVE_STAGING_RELEASE:-}" = "$1" ]; then
+        ACTIVE_STAGING_RELEASE=
+      fi
+      ;;
     *) return 1 ;;
   esac
 }
@@ -1429,14 +1472,19 @@ stage_release() {
     die 'manager-owned runner template is unavailable'
     return 1
   }
-  /bin/mkdir -p "$RELEASES_DIR" || {
-    die 'could not create releases directory'
-    return 1
-  }
-  [ ! -L "$RELEASES_DIR" ] || {
-    die 'releases directory must not be a symlink'
-    return 1
-  }
+  if [ -d "$RELEASES_DIR" ] && [ ! -L "$RELEASES_DIR" ]; then
+    : "${INSTALL_CREATED_RELEASES:=0}"
+  else
+    if [ -e "$RELEASES_DIR" ] || [ -L "$RELEASES_DIR" ]; then
+      die 'releases directory path is unsafe'
+      return 1
+    fi
+    /bin/mkdir "$RELEASES_DIR" || {
+      die 'could not create releases directory'
+      return 1
+    }
+    INSTALL_CREATED_RELEASES=1
+  fi
 
   installed_at=$(/bin/date +%s) || {
     die 'could not read installation time'
@@ -1462,6 +1510,7 @@ stage_release() {
     die 'could not create staging directory'
     return 1
   }
+  ACTIVE_STAGING_RELEASE=$staging_release
 
   if ! "$NPM_BIN" install --prefix "$staging_release" "@deepseek-ai/dsh@$LATEST_VERSION" \
     --no-save --package-lock=false --omit=dev --no-audit --no-fund; then
@@ -1589,6 +1638,7 @@ process.stdout.write(pkg.version + "\n" + pkg.bin.dsh + "\n");
     die 'could not publish staged release'
     return 1
   fi
+  ACTIVE_STAGING_RELEASE=
 
   STAGED_RELEASE_ID=$release_id
   STAGED_RELEASE_PATH=$final_release
@@ -1645,10 +1695,28 @@ release_lock() {
   }
 }
 
+operation_exit_cleanup() {
+  local manager_transaction_was_active install_cleanup_was_active
+  manager_transaction_was_active=${MANAGER_TRANSACTION_ACTIVE:-0}
+  install_cleanup_was_active=${INSTALL_CLEANUP_ACTIVE:-0}
+
+  if [ "$manager_transaction_was_active" -eq 1 ]; then
+    restore_manager_cli || :
+  fi
+  if [ "$install_cleanup_was_active" -eq 1 ]; then
+    cleanup_install_directories || :
+  fi
+  release_lock_if_owned
+  if [ "$install_cleanup_was_active" -eq 1 ]; then
+    cleanup_install_directories || :
+    INSTALL_CLEANUP_ACTIVE=0
+  fi
+}
+
 acquire_lock() {
   if /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
     if printf '%s\n' "$$" >"$LOCK_DIR/pid"; then
-      trap 'release_lock_if_owned' EXIT
+      trap 'operation_exit_cleanup' EXIT
       trap 'exit 130' INT
       trap 'exit 143' TERM
       return 0
@@ -1696,7 +1764,7 @@ acquire_lock() {
     return 1
   }
   if printf '%s\n' "$$" >"$LOCK_DIR/pid"; then
-    trap 'release_lock_if_owned' EXIT
+    trap 'operation_exit_cleanup' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     return 0
@@ -1732,8 +1800,10 @@ prepare_install_lock_root() {
   INSTALL_CREATED_APP_SUPPORT=0
   INSTALL_CREATED_ROOT=0
   INSTALL_CREATED_LIBEXEC=0
+  INSTALL_CREATED_RELEASES=0
   INSTALL_CREATED_LOCAL=0
   INSTALL_CREATED_BIN=0
+  ACTIVE_STAGING_RELEASE=
 
   record_install_directory "$HOME/Library" INSTALL_CREATED_LIBRARY || return 1
   record_install_directory "$HOME/Library/Application Support" INSTALL_CREATED_APP_SUPPORT || return 1
@@ -1749,6 +1819,10 @@ prepare_install_payload_directories() {
 
 cleanup_install_directories() {
   [ "$#" -eq 0 ] || return 1
+  if [ -n "${ACTIVE_STAGING_RELEASE:-}" ]; then
+    remove_staging_release "$ACTIVE_STAGING_RELEASE" || :
+  fi
+  [ "${INSTALL_CREATED_RELEASES:-0}" -eq 0 ] || /bin/rmdir -- "$RELEASES_DIR" 2>/dev/null || :
   [ "${INSTALL_CREATED_BIN:-0}" -eq 0 ] || /bin/rmdir -- "${CLI_DEST%/*}" 2>/dev/null || :
   [ "${INSTALL_CREATED_LOCAL:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/.local" 2>/dev/null || :
   [ "${INSTALL_CREATED_LIBEXEC:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_MAC_ROOT/libexec" 2>/dev/null || :
@@ -1981,8 +2055,10 @@ cmd_install() {
     cleanup_install_directories
     return 1
   }
+  INSTALL_CLEANUP_ACTIVE=1
   if ! acquire_lock; then
     cleanup_install_directories
+    INSTALL_CLEANUP_ACTIVE=0
     return 1
   fi
 
@@ -2025,8 +2101,10 @@ cmd_install() {
   fi
   if [ "$install_status" -ne 0 ]; then
     cleanup_install_directories
+    INSTALL_CLEANUP_ACTIVE=0
     return 1
   fi
+  INSTALL_CLEANUP_ACTIVE=0
   print_path_hint
 }
 
