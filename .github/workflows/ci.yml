@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Install ShellCheck
+        run: brew install shellcheck
+      - name: Check Bash syntax
+        run: /bin/bash -n bin/dsh-mac libexec/dsh-mac-run install.sh tests/*.sh
+      - name: Run ShellCheck
+        run: shellcheck -s bash bin/dsh-mac libexec/dsh-mac-run install.sh tests/*.sh
+      - name: Run isolated tests
+        run: /bin/bash tests/run.sh
