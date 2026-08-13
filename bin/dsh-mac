@@ -2,6 +2,7 @@
 set -u
 
 MANAGER_VERSION=0.1.0
+MANAGER_SCRIPT_PATH=${BASH_SOURCE[0]}
 
 die() {
   printf 'dsh-mac: error: %s\n' "$*" >&2
@@ -1139,7 +1140,50 @@ resolve_node_and_npm() {
 
 preflight_install() {
   preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
-  resolve_node_and_npm
+  resolve_node_and_npm || return 1
+  resolve_manager_sources
+}
+
+resolve_manager_sources() {
+  [ "$#" -eq 0 ] || return 1
+  local invoked_path source_dir source_name checkout_runner runner_parent
+  invoked_path=$MANAGER_SCRIPT_PATH
+  source_dir=$(CDPATH= cd -P -- "$(dirname -- "$invoked_path")" && pwd) || {
+    die 'could not resolve the manager command source'
+    return 1
+  }
+  source_name=$(basename -- "$invoked_path") || return 1
+  MANAGER_CLI_SOURCE="$source_dir/$source_name"
+  [ -f "$MANAGER_CLI_SOURCE" ] && [ ! -L "$MANAGER_CLI_SOURCE" ] || {
+    die 'manager command source is unavailable'
+    return 1
+  }
+
+  checkout_runner="$source_dir/../libexec/dsh-mac-run"
+  if [ -f "$checkout_runner" ] && [ ! -L "$checkout_runner" ]; then
+    runner_parent=$(CDPATH= cd -P -- "$(dirname -- "$checkout_runner")" && pwd) || return 1
+    MANAGER_RUNNER_SOURCE="$runner_parent/$(basename -- "$checkout_runner")"
+  elif [ -f "$RUNNER_TEMPLATE" ] && [ ! -L "$RUNNER_TEMPLATE" ]; then
+    MANAGER_RUNNER_SOURCE=$RUNNER_TEMPLATE
+  else
+    die 'manager runner source is unavailable'
+    return 1
+  fi
+
+  /bin/bash -n "$MANAGER_CLI_SOURCE" "$MANAGER_RUNNER_SOURCE" || {
+    die 'manager source failed syntax validation'
+    return 1
+  }
+  if { [ -e "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; } &&
+    { [ ! -d "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; }; then
+    die 'manager root must be a physical directory'
+    return 1
+  fi
+  if { [ -e "${CLI_DEST%/*}" ] || [ -L "${CLI_DEST%/*}" ]; } &&
+    { [ ! -d "${CLI_DEST%/*}" ] || [ -L "${CLI_DEST%/*}" ]; }; then
+    die 'manager command directory must be a physical directory'
+    return 1
+  fi
 }
 
 resolve_latest_version() {
@@ -1662,26 +1706,465 @@ acquire_lock() {
   return 1
 }
 
+record_install_directory() {
+  [ "$#" -eq 2 ] || return 1
+  local directory_path directory_flag
+  directory_path=$1
+  directory_flag=$2
+  if [ -d "$directory_path" ] && [ ! -L "$directory_path" ]; then
+    eval "$directory_flag=0"
+    return 0
+  fi
+  if [ -e "$directory_path" ] || [ -L "$directory_path" ]; then
+    die "install directory path is unsafe: $directory_path"
+    return 1
+  fi
+  /bin/mkdir "$directory_path" || {
+    die "could not create install directory: $directory_path"
+    return 1
+  }
+  eval "$directory_flag=1"
+}
+
+prepare_install_lock_root() {
+  [ "$#" -eq 0 ] || return 1
+  INSTALL_CREATED_LIBRARY=0
+  INSTALL_CREATED_APP_SUPPORT=0
+  INSTALL_CREATED_ROOT=0
+  INSTALL_CREATED_LIBEXEC=0
+  INSTALL_CREATED_LOCAL=0
+  INSTALL_CREATED_BIN=0
+
+  record_install_directory "$HOME/Library" INSTALL_CREATED_LIBRARY || return 1
+  record_install_directory "$HOME/Library/Application Support" INSTALL_CREATED_APP_SUPPORT || return 1
+  record_install_directory "$DSH_MAC_ROOT" INSTALL_CREATED_ROOT
+}
+
+prepare_install_payload_directories() {
+  [ "$#" -eq 0 ] || return 1
+  record_install_directory "$DSH_MAC_ROOT/libexec" INSTALL_CREATED_LIBEXEC || return 1
+  record_install_directory "$HOME/.local" INSTALL_CREATED_LOCAL || return 1
+  record_install_directory "${CLI_DEST%/*}" INSTALL_CREATED_BIN
+}
+
+cleanup_install_directories() {
+  [ "$#" -eq 0 ] || return 1
+  [ "${INSTALL_CREATED_BIN:-0}" -eq 0 ] || /bin/rmdir -- "${CLI_DEST%/*}" 2>/dev/null || :
+  [ "${INSTALL_CREATED_LOCAL:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/.local" 2>/dev/null || :
+  [ "${INSTALL_CREATED_LIBEXEC:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_MAC_ROOT/libexec" 2>/dev/null || :
+  [ "${INSTALL_CREATED_ROOT:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_MAC_ROOT" 2>/dev/null || :
+  [ "${INSTALL_CREATED_APP_SUPPORT:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library/Application Support" 2>/dev/null || :
+  [ "${INSTALL_CREATED_LIBRARY:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library" 2>/dev/null || :
+}
+
+next_manager_transaction_path() {
+  [ "$#" -eq 2 ] || return 1
+  local transaction_dir transaction_kind transaction_serial transaction_path
+  transaction_dir=$1
+  transaction_kind=$2
+  transaction_serial=$$
+  transaction_path="$transaction_dir/.dsh-mac-$transaction_kind-$transaction_serial"
+  while [ -e "$transaction_path" ] || [ -L "$transaction_path" ]; do
+    transaction_serial=$((transaction_serial + 1))
+    transaction_path="$transaction_dir/.dsh-mac-$transaction_kind-$transaction_serial"
+  done
+  printf '%s\n' "$transaction_path"
+}
+
+restore_manager_destination() {
+  [ "$#" -eq 3 ] || return 1
+  local destination state backup restore_status
+  destination=$1
+  state=$2
+  backup=$3
+  restore_status=0
+  case "$state" in
+    noop) ;;
+    new)
+      if [ -e "$destination" ] || [ -L "$destination" ]; then
+        /bin/rm -f -- "$destination" || restore_status=1
+      fi
+      ;;
+    replaced)
+      if [ -e "$backup" ] || [ -L "$backup" ]; then
+        if [ -e "$destination" ] || [ -L "$destination" ]; then
+          /bin/rm -f -- "$destination" || restore_status=1
+        fi
+        if [ "$restore_status" -eq 0 ]; then
+          /bin/mv "$backup" "$destination" || restore_status=1
+        fi
+      fi
+      ;;
+    '') ;;
+    *) restore_status=1 ;;
+  esac
+  return "$restore_status"
+}
+
+restore_manager_cli() {
+  [ "$#" -eq 0 ] || return 1
+  local restore_status
+  restore_status=0
+  if [ -n "${MANAGER_RUNNER_TEMP:-}" ] &&
+    { [ -e "$MANAGER_RUNNER_TEMP" ] || [ -L "$MANAGER_RUNNER_TEMP" ]; }; then
+    /bin/rm -f -- "$MANAGER_RUNNER_TEMP" || restore_status=1
+  fi
+  if [ -n "${MANAGER_CLI_TEMP:-}" ] &&
+    { [ -e "$MANAGER_CLI_TEMP" ] || [ -L "$MANAGER_CLI_TEMP" ]; }; then
+    /bin/rm -f -- "$MANAGER_CLI_TEMP" || restore_status=1
+  fi
+  restore_manager_destination "$RUNNER_TEMPLATE" "${MANAGER_RUNNER_STATE:-}" \
+    "${MANAGER_RUNNER_BACKUP:-}" || restore_status=1
+  restore_manager_destination "$CLI_DEST" "${MANAGER_CLI_STATE:-}" \
+    "${MANAGER_CLI_BACKUP:-}" || restore_status=1
+  MANAGER_TRANSACTION_ACTIVE=0
+  return "$restore_status"
+}
+
+finish_manager_cli() {
+  [ "$#" -eq 0 ] || return 1
+  local finish_status
+  finish_status=0
+  if [ "${MANAGER_RUNNER_STATE:-}" = replaced ]; then
+    /bin/rm -f -- "$MANAGER_RUNNER_BACKUP" || finish_status=1
+  fi
+  if [ "${MANAGER_CLI_STATE:-}" = replaced ]; then
+    /bin/rm -f -- "$MANAGER_CLI_BACKUP" || finish_status=1
+  fi
+  MANAGER_TRANSACTION_ACTIVE=0
+  return "$finish_status"
+}
+
+install_manager_cli() {
+  [ "$#" -eq 0 ] || return 1
+  local manager_install_status
+  MANAGER_CLI_STATE=noop
+  MANAGER_RUNNER_STATE=noop
+  MANAGER_CLI_TEMP=
+  MANAGER_RUNNER_TEMP=
+  MANAGER_CLI_BACKUP=
+  MANAGER_RUNNER_BACKUP=
+  MANAGER_TRANSACTION_ACTIVE=1
+  manager_install_status=0
+
+  if [ ! -e "$CLI_DEST" ] || ! [ "$MANAGER_CLI_SOURCE" -ef "$CLI_DEST" ]; then
+    MANAGER_CLI_TEMP=$(next_manager_transaction_path "${CLI_DEST%/*}" cli-new) || return 1
+    /bin/cp "$MANAGER_CLI_SOURCE" "$MANAGER_CLI_TEMP" || manager_install_status=1
+    if [ "$manager_install_status" -eq 0 ]; then
+      /bin/chmod 0755 "$MANAGER_CLI_TEMP" || manager_install_status=1
+    fi
+    if [ "$manager_install_status" -eq 0 ]; then
+      /bin/bash -n "$MANAGER_CLI_TEMP" || manager_install_status=1
+    fi
+    if [ -e "$CLI_DEST" ] || [ -L "$CLI_DEST" ]; then
+      MANAGER_CLI_STATE=replaced
+      MANAGER_CLI_BACKUP=$(next_manager_transaction_path "${CLI_DEST%/*}" cli-backup) || return 1
+    else
+      MANAGER_CLI_STATE=new
+    fi
+  fi
+
+  if [ "$manager_install_status" -eq 0 ] &&
+    { [ ! -e "$RUNNER_TEMPLATE" ] || ! [ "$MANAGER_RUNNER_SOURCE" -ef "$RUNNER_TEMPLATE" ]; }; then
+    MANAGER_RUNNER_TEMP=$(next_manager_transaction_path "${RUNNER_TEMPLATE%/*}" runner-new) || return 1
+    /bin/cp "$MANAGER_RUNNER_SOURCE" "$MANAGER_RUNNER_TEMP" || manager_install_status=1
+    if [ "$manager_install_status" -eq 0 ]; then
+      /bin/chmod 0755 "$MANAGER_RUNNER_TEMP" || manager_install_status=1
+    fi
+    if [ "$manager_install_status" -eq 0 ]; then
+      /bin/bash -n "$MANAGER_RUNNER_TEMP" || manager_install_status=1
+    fi
+    if [ -e "$RUNNER_TEMPLATE" ] || [ -L "$RUNNER_TEMPLATE" ]; then
+      MANAGER_RUNNER_STATE=replaced
+      MANAGER_RUNNER_BACKUP=$(next_manager_transaction_path "${RUNNER_TEMPLATE%/*}" runner-backup) || return 1
+    else
+      MANAGER_RUNNER_STATE=new
+    fi
+  fi
+
+  if [ "$manager_install_status" -eq 0 ] && [ "$MANAGER_CLI_STATE" = replaced ]; then
+    /bin/mv "$CLI_DEST" "$MANAGER_CLI_BACKUP" || manager_install_status=1
+  fi
+  if [ "$manager_install_status" -eq 0 ] && [ "$MANAGER_RUNNER_STATE" = replaced ]; then
+    /bin/mv "$RUNNER_TEMPLATE" "$MANAGER_RUNNER_BACKUP" || manager_install_status=1
+  fi
+  if [ "$manager_install_status" -eq 0 ] && [ "$MANAGER_CLI_STATE" != noop ]; then
+    /bin/mv "$MANAGER_CLI_TEMP" "$CLI_DEST" || manager_install_status=1
+  fi
+  if [ "$manager_install_status" -eq 0 ] && [ "$MANAGER_RUNNER_STATE" != noop ]; then
+    /bin/mv "$MANAGER_RUNNER_TEMP" "$RUNNER_TEMPLATE" || manager_install_status=1
+  fi
+
+  if [ "$manager_install_status" -ne 0 ]; then
+    restore_manager_cli || die 'could not restore manager files'
+    die 'could not install manager files'
+    return 1
+  fi
+  [ -f "$CLI_DEST" ] && [ -x "$CLI_DEST" ] && [ ! -L "$CLI_DEST" ] || {
+    restore_manager_cli || :
+    die 'installed manager command is invalid'
+    return 1
+  }
+  [ -f "$RUNNER_TEMPLATE" ] && [ -x "$RUNNER_TEMPLATE" ] && [ ! -L "$RUNNER_TEMPLATE" ] || {
+    restore_manager_cli || :
+    die 'installed manager runner is invalid'
+    return 1
+  }
+}
+
+print_path_hint() {
+  [ "$#" -eq 0 ] || return 1
+  local manager_bin
+  manager_bin=${CLI_DEST%/*}
+  case ":${PATH:-}:" in
+    *":$manager_bin:"*) return 0 ;;
+  esac
+  printf 'Add dsh-mac to PATH:\n' >&2
+  printf '  export PATH="%s:$PATH"\n' "$manager_bin" >&2
+  printf 'Executable: %s\n' "$CLI_DEST" >&2
+}
+
+preflight_service_command() {
+  [ "$#" -eq 0 ] || return 1
+  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" || return 1
+  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
+    die 'dsh-mac is not installed'
+    return 1
+  }
+}
+
+run_locked_service_command() {
+  [ "$#" -eq 1 ] || return 1
+  local service_action service_status
+  service_action=$1
+  preflight_service_command || return 1
+  acquire_lock || return 1
+  service_status=0
+  recover_activation || service_status=1
+  if [ "$service_status" -eq 0 ]; then
+    case "$service_action" in
+      start) start_service || service_status=1 ;;
+      stop) stop_service || service_status=1 ;;
+      restart) restart_service || service_status=1 ;;
+      *) service_status=1 ;;
+    esac
+  fi
+  if ! release_lock; then
+    return 1
+  fi
+  return "$service_status"
+}
+
+cmd_start() {
+  [ "$#" -eq 0 ] || return 64
+  run_locked_service_command start
+}
+
+cmd_stop() {
+  [ "$#" -eq 0 ] || return 64
+  run_locked_service_command stop
+}
+
+cmd_restart() {
+  [ "$#" -eq 0 ] || return 64
+  run_locked_service_command restart
+}
+
+cmd_install() {
+  [ "$#" -eq 0 ] || {
+    die 'usage: dsh-mac install'
+    return 64
+  }
+  local install_status staged_release current_id
+  preflight_install || return 1
+  prepare_install_lock_root || {
+    cleanup_install_directories
+    return 1
+  }
+  if ! acquire_lock; then
+    cleanup_install_directories
+    return 1
+  fi
+
+  install_status=0
+  prepare_install_payload_directories || install_status=1
+  if [ "$install_status" -eq 0 ]; then
+    install_manager_cli || install_status=1
+  fi
+  if [ "$install_status" -eq 0 ]; then
+    recover_activation || install_status=1
+  fi
+  if [ "$install_status" -eq 0 ]; then
+    stage_release || install_status=1
+  fi
+  if [ "$install_status" -eq 0 ]; then
+    ensure_plist || install_status=1
+  fi
+  if [ "$install_status" -eq 0 ]; then
+    staged_release=$STAGED_RELEASE_ID
+    current_id=$(current_release_id 2>/dev/null) || current_id=
+    if [ "$staged_release" = "$current_id" ]; then
+      if ! health_state >/dev/null && { ! start_service || ! wait_for_health; }; then
+        install_status=1
+      fi
+    elif ! activate_release "$staged_release"; then
+      install_status=1
+    fi
+  fi
+  if [ "$install_status" -eq 0 ]; then
+    cmd_open || install_status=1
+  fi
+
+  if [ "$install_status" -eq 0 ]; then
+    finish_manager_cli || install_status=1
+  else
+    restore_manager_cli || :
+  fi
+  if ! release_lock; then
+    install_status=1
+  fi
+  if [ "$install_status" -ne 0 ]; then
+    cleanup_install_directories
+    return 1
+  fi
+  print_path_hint
+}
+
 cmd_status() {
   [ "$#" -eq 0 ] || {
     die 'usage: dsh-mac status'
-    return 1
+    return 64
   }
+  local status_dsh_version status_launchd status_pid status_health status_code
   preflight_common "$LSOF_BIN" "$CURL_BIN" || return 1
-  health_state
+
+  status_dsh_version='not installed'
+  if status_release_id=$(current_release_id 2>/dev/null) &&
+    read_manifest "$RELEASES_DIR/$status_release_id/manifest.env" 2>/dev/null; then
+    status_dsh_version=$MANIFEST_DSH_VERSION
+  fi
+  status_launchd=unloaded
+  status_pid='-'
+  if service_loaded; then
+    status_launchd=loaded
+    status_pid=$(launchd_pid 2>/dev/null) || status_pid='-'
+  fi
+
+  status_code=0
+  if [ -e "$ACTIVATION_FILE" ] || [ -L "$ACTIVATION_FILE" ]; then
+    status_health=interrupted
+    status_code=1
+  else
+    status_health=$(health_state)
+    status_code=$?
+  fi
+
+  printf 'Manager version: %s\n' "$MANAGER_VERSION"
+  printf 'DSH version: %s\n' "$status_dsh_version"
+  printf 'Launchd: %s\n' "$status_launchd"
+  printf 'PID: %s\n' "$status_pid"
+  printf 'URL: %s\n' 'http://127.0.0.1:3080'
+  printf 'Health: %s\n' "$status_health"
+  return "$status_code"
 }
 
 cmd_open() {
   [ "$#" -eq 0 ] || {
     die 'usage: dsh-mac open'
-    return 1
+    return 64
   }
   preflight_common "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  if [ -e "$ACTIVATION_FILE" ] || [ -L "$ACTIVATION_FILE" ]; then
+    die 'DSH activation was interrupted'
+    return 1
+  fi
   health_state >/dev/null || {
     die 'DSH service is not healthy'
     return 1
   }
   "$OPEN_BIN" http://127.0.0.1:3080
+}
+
+cmd_logs() {
+  [ "$#" -eq 0 ] || {
+    die 'usage: dsh-mac logs'
+    return 64
+  }
+  preflight_common "$TAIL_BIN" || return 1
+  exec "$TAIL_BIN" -F "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log"
+}
+
+validate_uninstall_root() {
+  [ "$#" -eq 0 ] || return 1
+  local expected_root
+  case "$HOME" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$HOME" ] || return 1
+  expected_root="$HOME/Library/Application Support/dsh-mac"
+  [ "$DSH_MAC_ROOT" = "$expected_root" ] || return 1
+  [ "$DSH_MAC_ROOT" != / ] || return 1
+  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ]
+}
+
+cmd_uninstall() {
+  [ "$#" -eq 0 ] || {
+    die 'usage: dsh-mac uninstall'
+    return 64
+  }
+  local uninstall_status
+  preflight_common || return 1
+  if { [ -e "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; } &&
+    { [ ! -d "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; }; then
+    die 'manager root is unsafe for uninstall'
+    return 1
+  fi
+  prepare_install_lock_root || {
+    cleanup_install_directories
+    return 1
+  }
+  if ! acquire_lock; then
+    cleanup_install_directories
+    return 1
+  fi
+
+  uninstall_status=0
+  if service_loaded; then
+    "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
+      die 'could not boot out LaunchAgent'
+      uninstall_status=1
+    }
+  fi
+  if [ "$uninstall_status" -eq 0 ]; then
+    /bin/rm -f -- "$PLIST_PATH" || uninstall_status=1
+  fi
+  if [ "$uninstall_status" -eq 0 ]; then
+    /bin/rm -f -- "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log" || uninstall_status=1
+    /bin/rmdir -- "$LOG_DIR" 2>/dev/null || :
+  fi
+  if [ "$uninstall_status" -eq 0 ]; then
+    validate_uninstall_root || {
+      die 'manager root failed uninstall validation'
+      uninstall_status=1
+    }
+  fi
+
+  if [ "$uninstall_status" -ne 0 ]; then
+    release_lock || :
+    cleanup_install_directories
+    return 1
+  fi
+
+  /bin/rm -rf -- "$DSH_MAC_ROOT" || {
+    die 'could not remove manager root'
+    return 1
+  }
+  trap - EXIT INT TERM
+  /bin/rm -f -- "$CLI_DEST" || {
+    die 'could not remove manager command'
+    return 1
+  }
 }
 
 cmd_update() {
@@ -1722,14 +2205,56 @@ cmd_update() {
   return "$update_status"
 }
 
+print_usage() {
+  printf '%s\n' \
+    'Usage: dsh-mac COMMAND' \
+    '' \
+    'Commands:' \
+    '  install    Install and start DSH' \
+    '  start      Start the DSH service' \
+    '  stop       Stop the DSH service' \
+    '  restart    Restart the DSH service' \
+    '  status     Show manager and service status' \
+    '  open       Open the verified healthy service' \
+    '  logs       Follow the service logs' \
+    '  update     Install the latest DSH release' \
+    '  uninstall  Remove dsh-mac and its service' \
+    '  version    Print the manager version' \
+    '  help       Show this help'
+}
+
+usage_error() {
+  print_usage >&2
+  return 64
+}
+
 main() {
-  command_name=${1:-}
+  [ "$#" -eq 1 ] || {
+    usage_error
+    return 64
+  }
+  command_name=$1
   case "$command_name" in
+    install)
+      shift
+      cmd_install "$@"
+      ;;
+    start)
+      shift
+      cmd_start "$@"
+      ;;
+    stop)
+      shift
+      cmd_stop "$@"
+      ;;
+    restart)
+      shift
+      cmd_restart "$@"
+      ;;
+    help)
+      print_usage
+      ;;
     version)
-      [ "$#" -eq 1 ] || {
-        die 'usage: dsh-mac version'
-        return 1
-      }
       printf '%s\n' "$MANAGER_VERSION"
       ;;
     status)
@@ -1740,13 +2265,21 @@ main() {
       shift
       cmd_open "$@"
       ;;
+    logs)
+      shift
+      cmd_logs "$@"
+      ;;
     update)
       shift
       cmd_update "$@"
       ;;
+    uninstall)
+      shift
+      cmd_uninstall "$@"
+      ;;
     *)
-      die 'usage: dsh-mac {version|status|open|update}'
-      return 1
+      usage_error
+      return 64
       ;;
   esac
 }

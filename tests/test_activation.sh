@@ -590,7 +590,7 @@ test_update_stages_and_activates_a_new_release_transactionally() (
   [ ! -e "$LOCK_DIR" ]
 )
 
-test_read_only_status_and_open_preserve_activation_journal() (
+test_read_only_status_and_open_report_and_preserve_activation_journal() (
   prepare_update_case readonly-journal || return 1
   type cmd_status >/dev/null 2>&1 || return 1
   type cmd_open >/dev/null 2>&1 || return 1
@@ -601,11 +601,17 @@ test_read_only_status_and_open_preserve_activation_journal() (
   write_literal_activation "$ACTIVATION_FILE" "$OLD_RELEASE" "$CANDIDATE_RELEASE"
   before=$(<"$ACTIVATION_FILE")
 
-  assert_eq healthy "$(cmd_status)" || return 1
+  status_output=$(cmd_status)
+  status_result=$?
+  assert_eq 1 "$status_result" || return 1
+  case "$status_output" in
+    *'Health: interrupted'*) ;;
+    *) return 1 ;;
+  esac
   assert_eq "$before" "$(<"$ACTIVATION_FILE")" || return 1
-  cmd_open || return 1
+  ! cmd_open || return 1
 
-  assert_eq 'http://127.0.0.1:3080' "$(<"$DSH_TEST_OPENED_URL")" || return 1
+  assert_eq '' "$(<"$DSH_TEST_OPENED_URL")" || return 1
   assert_eq "$before" "$(<"$ACTIVATION_FILE")" || return 1
   [ ! -e "$LOCK_DIR" ]
 )
@@ -684,6 +690,6 @@ run_test 'update recovers before one latest resolve and avoids a second restart'
 run_test 'update keeps a healthy same-version service PID unchanged' test_update_keeps_healthy_same_version_running_without_restart
 run_test 'update starts and verifies a stopped same-version service' test_update_starts_and_verifies_a_stopped_same_version
 run_test 'update stages and transactionally activates a new release' test_update_stages_and_activates_a_new_release_transactionally
-run_test 'read-only status and open preserve an activation journal' test_read_only_status_and_open_preserve_activation_journal
+run_test 'read-only status and open report and preserve an activation journal' test_read_only_status_and_open_report_and_preserve_activation_journal
 
 finish_tests
