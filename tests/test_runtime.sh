@@ -207,6 +207,16 @@ assert_call_has_token() {
   return 1
 }
 
+assert_no_release_link_temps() {
+  temp_parent=$1
+  for temp_path in "$temp_parent"/.release-link-*; do
+    if [ -e "$temp_path" ] || [ -L "$temp_path" ]; then
+      printf 'unexpected release-link temp: %s\n' "$temp_path" >&2
+      return 1
+    fi
+  done
+}
+
 stage_successfully() {
   stage_release || return 1
   [ -n "${STAGED_RELEASE_ID:-}" ] || {
@@ -519,6 +529,40 @@ test_atomic_release_link_rejects_previous_directory_target() (
   [ -d "$PREVIOUS_LINK" ] && [ ! -L "$PREVIOUS_LINK" ]
 )
 
+test_atomic_release_link_replaces_existing_current_symlink() (
+  prepare_runtime_home replace-current || return 1
+  old_release=0.1.0-1786630000-1200
+  new_release=0.1.1-1786640000-1201
+  /bin/mkdir -p "$RELEASES_DIR/$old_release" "$RELEASES_DIR/$new_release" || return 1
+  atomic_release_link "$CURRENT_LINK" "$old_release" || return 1
+
+  test_status=0
+  atomic_release_link "$CURRENT_LINK" "$new_release" || test_status=1
+  actual_target=$(/usr/bin/readlink "$CURRENT_LINK" 2>/dev/null) || actual_target=NOT_A_LINK
+  assert_eq "releases/$new_release" "$actual_target" || test_status=1
+  assert_no_release_link_temps "$RELEASES_DIR/$old_release" || test_status=1
+  assert_no_release_link_temps "$RELEASES_DIR" || test_status=1
+  assert_no_release_link_temps "$DSH_MAC_ROOT" || test_status=1
+  return "$test_status"
+)
+
+test_atomic_release_link_replaces_existing_previous_symlink() (
+  prepare_runtime_home replace-previous || return 1
+  old_release=0.1.0-1786630000-1200
+  new_release=0.1.1-1786640000-1201
+  /bin/mkdir -p "$RELEASES_DIR/$old_release" "$RELEASES_DIR/$new_release" || return 1
+  atomic_release_link "$PREVIOUS_LINK" "$old_release" || return 1
+
+  test_status=0
+  atomic_release_link "$PREVIOUS_LINK" "$new_release" || test_status=1
+  actual_target=$(/usr/bin/readlink "$PREVIOUS_LINK" 2>/dev/null) || actual_target=NOT_A_LINK
+  assert_eq "releases/$new_release" "$actual_target" || test_status=1
+  assert_no_release_link_temps "$RELEASES_DIR/$old_release" || test_status=1
+  assert_no_release_link_temps "$RELEASES_DIR" || test_status=1
+  assert_no_release_link_temps "$DSH_MAC_ROOT" || test_status=1
+  return "$test_status"
+)
+
 test_installed_cli_uses_manager_owned_runner_without_sibling_libexec() (
   prepare_runtime_home installed-copy || return 1
   install_manager_runner || return 1
@@ -614,6 +658,8 @@ run_test 'atomic release links expose validated current IDs' test_atomic_links_a
 run_test 'atomic release link rejects releases symlinked outside manager root' test_atomic_release_link_rejects_releases_symlink_outside_root
 run_test 'atomic release link rejects current directory target' test_atomic_release_link_rejects_current_directory_target
 run_test 'atomic release link rejects previous directory target' test_atomic_release_link_rejects_previous_directory_target
+run_test 'atomic release link replaces existing current symlink' test_atomic_release_link_replaces_existing_current_symlink
+run_test 'atomic release link replaces existing previous symlink' test_atomic_release_link_replaces_existing_previous_symlink
 run_test 'installed CLI stages with manager-owned runner and no sibling libexec' test_installed_cli_uses_manager_owned_runner_without_sibling_libexec
 run_test 'runner check accepts spaces and ampersand before completion' test_runner_check_accepts_special_release_path_without_completion
 run_test 'runner normal mode requires completion before Web exec' test_runner_normal_mode_requires_completion_before_exec

@@ -624,7 +624,7 @@ atomic_release_link() {
     die 'could not create temporary release link'
     return 1
   }
-  if ! /bin/mv -f "$link_tmp" "$link_path"; then
+  if ! /bin/mv -fh "$link_tmp" "$link_path"; then
     /bin/rm -f -- "$link_tmp"
     die 'could not publish release link'
     return 1
