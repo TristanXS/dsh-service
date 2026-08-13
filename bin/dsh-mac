@@ -225,7 +225,7 @@ read_manifest() {
       return 1
       ;;
   esac
-  [ -x "$manifest_node_bin" ] || {
+  [ -f "$manifest_node_bin" ] && [ -x "$manifest_node_bin" ] || {
     die 'manifest NODE_BIN must be executable'
     return 1
   }
@@ -380,7 +380,7 @@ preflight_common() {
         return 1
         ;;
     esac
-    [ -x "$command_path" ] || {
+    [ -f "$command_path" ] && [ -x "$command_path" ] || {
       die "required command is unavailable: $command_path"
       return 1
     }
@@ -402,7 +402,7 @@ resolve_external_command() {
 }
 
 preflight_install() {
-  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" || return 1
+  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
 
   resolved_node=$(resolve_external_command node) || {
     die 'node must resolve to an absolute executable, not an alias or function'

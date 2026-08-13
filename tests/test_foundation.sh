@@ -178,6 +178,14 @@ test_manifest_rejects_relative_node_bin() {
   ! read_manifest "$MANIFEST_PATH"
 }
 
+test_manifest_rejects_node_bin_directory() {
+  prepare_manifest
+  node_directory="$TEST_ROOT/bin/node-directory"
+  mkdir "$node_directory" || return 1
+  write_manifest "$MANIFEST_PATH" "$node_directory" '0.1.0' 'bin/dsh-mac' '1786640000'
+  ! read_manifest "$MANIFEST_PATH"
+}
+
 test_manifest_rejects_unsafe_cli_relative() {
   prepare_manifest
   write_manifest "$MANIFEST_PATH" "$MANIFEST_NODE_PATH" '0.1.0' '../outside' '1786640000'
@@ -307,6 +315,13 @@ test_common_preflight_rejects_missing_requested_command() (
   ! preflight_common "$TEST_ROOT/bin/does-not-exist"
 )
 
+test_common_preflight_rejects_command_directory() (
+  prepare_preflight_fakes
+  command_directory="$TEST_ROOT/bin/command-directory"
+  mkdir "$command_directory" || return 1
+  ! preflight_common "$command_directory"
+)
+
 test_install_preflight_resolves_caller_node_and_npm() (
   prepare_preflight_fakes
   write_fake node 'if [ "${1:-}" = --version ]; then printf "v22.19.0\\n"; else exit 1; fi'
@@ -343,6 +358,16 @@ test_install_preflight_rejects_unsupported_node() (
   write_fake node 'printf "v23.9.0\\n"'
   write_fake npm 'exit 0'
   PATH="$TEST_ROOT/bin:/usr/bin:/bin"
+  ! preflight_install
+)
+
+test_install_preflight_requires_open() (
+  prepare_preflight_fakes
+  write_fake node 'printf "v22.19.0\\n"'
+  write_fake npm 'exit 0'
+  DSH_MAC_OPEN_BIN="$TEST_ROOT/bin/missing-open"
+  PATH="$TEST_ROOT/bin:/usr/bin:/bin"
+  init_command_paths
   ! preflight_install
 )
 
@@ -504,6 +529,7 @@ run_test 'manifest rejects duplicate keys' test_manifest_rejects_duplicate_keys
 run_test 'manifest rejects unknown keys' test_manifest_rejects_unknown_keys
 run_test 'manifest rejects missing keys' test_manifest_rejects_missing_keys
 run_test 'manifest rejects relative NODE_BIN' test_manifest_rejects_relative_node_bin
+run_test 'manifest rejects a NODE_BIN directory' test_manifest_rejects_node_bin_directory
 run_test 'manifest rejects unsafe CLI_RELATIVE' test_manifest_rejects_unsafe_cli_relative
 run_test 'manifest does not execute substitutions' test_manifest_does_not_execute_substitutions
 run_test 'manifest preserves spaces and equals' test_manifest_preserves_spaces_and_equals
@@ -518,10 +544,12 @@ run_test 'common preflight rejects relative HOME' test_common_preflight_rejects_
 run_test 'common preflight rejects HOME newline' test_common_preflight_rejects_home_with_newline
 run_test 'common preflight requires launchd domain' test_common_preflight_requires_launchd_domain
 run_test 'common preflight requires requested commands' test_common_preflight_rejects_missing_requested_command
+run_test 'common preflight rejects command directories' test_common_preflight_rejects_command_directory
 run_test 'install preflight resolves Node and npm' test_install_preflight_resolves_caller_node_and_npm
 run_test 'install preflight rejects a Node function' test_install_preflight_rejects_node_function
 run_test 'install preflight rejects relative Node path' test_install_preflight_rejects_relative_node_path
 run_test 'install preflight rejects unsupported Node' test_install_preflight_rejects_unsupported_node
+run_test 'install preflight requires open' test_install_preflight_requires_open
 run_test 'lock is exclusive and releasable' test_lock_is_exclusive_and_releasable
 run_test 'stale lock is reclaimed' test_stale_lock_is_reclaimed
 run_test 'malformed lock is retained' test_malformed_lock_is_not_reclaimed
