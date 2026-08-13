@@ -998,11 +998,109 @@ activate_release() {
   resume_activation "$old_release" "$candidate_release" "$old_release"
 }
 
+remove_incomplete_staging_releases() {
+  [ "$#" -eq 0 ] || return 1
+  local staging_path staging_name staging_name_pattern
+  if [ ! -e "$RELEASES_DIR" ] && [ ! -L "$RELEASES_DIR" ]; then
+    return 0
+  fi
+  release_root_is_owned || {
+    die 'releases directory is not manager-owned during recovery'
+    return 1
+  }
+
+  staging_name_pattern='^\.staging-[0-9]+-[0-9]+$'
+  for staging_path in "$RELEASES_DIR"/.staging-*; do
+    [ -e "$staging_path" ] || [ -L "$staging_path" ] || continue
+    staging_name=${staging_path##*/}
+    [[ "$staging_name" =~ $staging_name_pattern ]] || continue
+    [ -d "$staging_path" ] && [ ! -L "$staging_path" ] || continue
+    release_dir_is_owned "$staging_path" || {
+      die 'staging directory is not manager-owned during recovery'
+      return 1
+    }
+    if [ -f "$staging_path/.complete" ] && [ ! -L "$staging_path/.complete" ]; then
+      continue
+    fi
+    /bin/rm -rf -- "$staging_path" || {
+      die 'could not remove incomplete staging directory'
+      return 1
+    }
+  done
+}
+
+recover_without_activation_journal() {
+  [ "$#" -eq 0 ] || return 1
+  local current_present current_id current_complete
+  local previous_present previous_id previous_complete
+
+  if [ ! -e "$RELEASES_DIR" ] && [ ! -L "$RELEASES_DIR" ]; then
+    if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] ||
+      [ -e "$PREVIOUS_LINK" ] || [ -L "$PREVIOUS_LINK" ]; then
+      die 'release link exists without a releases directory'
+      return 1
+    fi
+    return 0
+  fi
+  release_root_is_owned || {
+    die 'releases directory is not manager-owned during recovery'
+    return 1
+  }
+
+  current_present=0
+  current_id=
+  current_complete=0
+  if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ]; then
+    current_present=1
+    current_id=$(release_link_id "$CURRENT_LINK") || {
+      die 'current release link is invalid during recovery'
+      return 1
+    }
+    if validate_release "$RELEASES_DIR/$current_id" >/dev/null 2>&1; then
+      current_complete=1
+    fi
+  fi
+
+  previous_present=0
+  previous_id=
+  previous_complete=0
+  if [ -e "$PREVIOUS_LINK" ] || [ -L "$PREVIOUS_LINK" ]; then
+    previous_present=1
+    previous_id=$(release_link_id "$PREVIOUS_LINK") || {
+      die 'previous release link is invalid during recovery'
+      return 1
+    }
+    if validate_release "$RELEASES_DIR/$previous_id" >/dev/null 2>&1; then
+      previous_complete=1
+    fi
+  fi
+
+  if [ "$current_complete" -eq 1 ]; then
+    remove_incomplete_staging_releases
+    return $?
+  fi
+  if [ "$previous_complete" -eq 1 ]; then
+    atomic_release_link "$CURRENT_LINK" "$previous_id" || return 1
+    remove_incomplete_staging_releases
+    return $?
+  fi
+  if [ "$current_present" -eq 1 ]; then
+    die 'current release is incomplete and no complete previous release is available'
+    return 1
+  fi
+  if [ "$previous_present" -eq 1 ]; then
+    die 'previous release is incomplete and cannot restore current'
+    return 1
+  fi
+  remove_incomplete_staging_releases
+}
+
 recover_activation() {
   [ "$#" -eq 0 ] || return 1
   local old_release candidate_release current_state
   if [ ! -e "$ACTIVATION_FILE" ] && [ ! -L "$ACTIVATION_FILE" ]; then
-    return 0
+    recover_without_activation_journal
+    return $?
   fi
   read_activation || return 1
   old_release=$ACTIVATION_OLD_RELEASE

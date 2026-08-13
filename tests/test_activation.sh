@@ -178,6 +178,185 @@ assert_journal_absent() {
   [ ! -e "$ACTIVATION_FILE" ] && [ ! -L "$ACTIVATION_FILE" ]
 }
 
+make_incomplete_staging_release() {
+  staging_id=$1
+  staging_path="$RELEASES_DIR/$staging_id"
+  /bin/mkdir -p "$staging_path/partial" || return 1
+  printf 'partial install\n' >"$staging_path/partial/sentinel"
+}
+
+test_no_journal_complete_current_wins_and_finishes_staging_cleanup() (
+  prepare_activation_case no-journal-current-wins || return 1
+  make_complete_release "$CANDIDATE_RELEASE" || return 1
+  make_complete_release "$OLD_RELEASE" || return 1
+  link_release "$CURRENT_LINK" "$CANDIDATE_RELEASE" || return 1
+  link_release "$PREVIOUS_LINK" "$OLD_RELEASE" || return 1
+  set_service_release "$CANDIDATE_RELEASE"
+  staging_id=.staging-1786660000-1300
+  make_incomplete_staging_release "$staging_id" || return 1
+  old_pid=$(<"$DSH_TEST_SERVICE_PID")
+
+  recover_activation || return 1
+
+  assert_release_link "$CANDIDATE_RELEASE" "$CURRENT_LINK" || return 1
+  assert_release_link "$OLD_RELEASE" "$PREVIOUS_LINK" || return 1
+  validate_release "$RELEASES_DIR/$CANDIDATE_RELEASE" || return 1
+  assert_eq "$old_pid" "$(<"$DSH_TEST_SERVICE_PID")" || return 1
+  [ ! -e "$RELEASES_DIR/$staging_id" ] && [ ! -L "$RELEASES_DIR/$staging_id" ]
+)
+
+test_no_journal_missing_current_restores_complete_previous() (
+  prepare_activation_case no-journal-missing-current || return 1
+  make_complete_release "$OLD_RELEASE" || return 1
+  link_release "$PREVIOUS_LINK" "$OLD_RELEASE" || return 1
+  set_service_release "$OLD_RELEASE"
+  old_pid=$(<"$DSH_TEST_SERVICE_PID")
+
+  recover_activation || return 1
+
+  assert_release_link "$OLD_RELEASE" "$CURRENT_LINK" || return 1
+  assert_release_link "$OLD_RELEASE" "$PREVIOUS_LINK" || return 1
+  assert_eq "$old_pid" "$(<"$DSH_TEST_SERVICE_PID")" || return 1
+  health_state >/dev/null
+)
+
+test_no_journal_owned_incomplete_current_uses_complete_previous() (
+  incomplete_kind=$1
+  prepare_activation_case "no-journal-incomplete-$incomplete_kind" || return 1
+  make_complete_release "$CANDIDATE_RELEASE" || return 1
+  make_complete_release "$OLD_RELEASE" || return 1
+  case "$incomplete_kind" in
+    missing-complete)
+      /bin/rm -f -- "$RELEASES_DIR/$CANDIDATE_RELEASE/.complete" || return 1
+      ;;
+    invalid-manifest)
+      printf 'BROKEN=1\n' >"$RELEASES_DIR/$CANDIDATE_RELEASE/manifest.env" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  link_release "$CURRENT_LINK" "$CANDIDATE_RELEASE" || return 1
+  link_release "$PREVIOUS_LINK" "$OLD_RELEASE" || return 1
+  set_service_release "$OLD_RELEASE"
+  old_pid=$(<"$DSH_TEST_SERVICE_PID")
+
+  recover_activation || return 1
+
+  assert_release_link "$OLD_RELEASE" "$CURRENT_LINK" || return 1
+  assert_release_link "$OLD_RELEASE" "$PREVIOUS_LINK" || return 1
+  [ -d "$RELEASES_DIR/$CANDIDATE_RELEASE" ] &&
+    [ ! -L "$RELEASES_DIR/$CANDIDATE_RELEASE" ] || return 1
+  assert_eq "$old_pid" "$(<"$DSH_TEST_SERVICE_PID")" || return 1
+  health_state >/dev/null
+)
+
+test_no_journal_cleanup_removes_only_exact_incomplete_physical_staging_children() (
+  prepare_activation_case no-journal-cleanup-boundary || return 1
+  make_complete_release "$CANDIDATE_RELEASE" || return 1
+  link_release "$CURRENT_LINK" "$CANDIDATE_RELEASE" || return 1
+  set_service_release "$CANDIDATE_RELEASE"
+
+  removable=.staging-1786660000-1301
+  complete_staging=.staging-1786660000-1302
+  staging_symlink=.staging-1786660000-1303
+  unknown_staging=.staging-not-generated
+  ordinary_incomplete=$STALE_RELEASE
+  nested_parent="$RELEASES_DIR/nested"
+  outside="$TEST_ROOT/no-journal-cleanup-outside"
+  make_incomplete_staging_release "$removable" || return 1
+  /bin/mkdir -p "$RELEASES_DIR/$complete_staging" || return 1
+  : >"$RELEASES_DIR/$complete_staging/.complete" || return 1
+  /bin/mkdir -p "$RELEASES_DIR/$unknown_staging" || return 1
+  printf 'keep unknown\n' >"$RELEASES_DIR/$unknown_staging/sentinel" || return 1
+  /bin/mkdir -p "$RELEASES_DIR/$ordinary_incomplete" || return 1
+  printf 'keep ordinary\n' >"$RELEASES_DIR/$ordinary_incomplete/sentinel" || return 1
+  /bin/mkdir -p "$nested_parent/.staging-1786660000-1304" || return 1
+  printf 'keep nested\n' >"$nested_parent/.staging-1786660000-1304/sentinel" || return 1
+  /bin/mkdir -p "$outside" || return 1
+  printf 'keep outside\n' >"$outside/sentinel" || return 1
+  /bin/ln -s "$outside" "$RELEASES_DIR/$staging_symlink" || return 1
+  /bin/ln -s "$outside" "$RELEASES_DIR/$UNRELATED_RELEASE" || return 1
+
+  recover_activation || return 1
+
+  [ ! -e "$RELEASES_DIR/$removable" ] && [ ! -L "$RELEASES_DIR/$removable" ] || return 1
+  [ -d "$RELEASES_DIR/$complete_staging" ] &&
+    [ -f "$RELEASES_DIR/$complete_staging/.complete" ] || return 1
+  assert_eq 'keep unknown' "$(<"$RELEASES_DIR/$unknown_staging/sentinel")" || return 1
+  assert_eq 'keep ordinary' "$(<"$RELEASES_DIR/$ordinary_incomplete/sentinel")" || return 1
+  assert_eq 'keep nested' "$(<"$nested_parent/.staging-1786660000-1304/sentinel")" || return 1
+  [ -L "$RELEASES_DIR/$staging_symlink" ] || return 1
+  [ -L "$RELEASES_DIR/$UNRELATED_RELEASE" ] || return 1
+  assert_eq 'keep outside' "$(<"$outside/sentinel")"
+)
+
+test_no_journal_unsafe_link_fails_before_staging_cleanup() (
+  unsafe_side=$1
+  unsafe_kind=$2
+  prepare_activation_case "no-journal-unsafe-$unsafe_side-$unsafe_kind" || return 1
+  make_complete_release "$CANDIDATE_RELEASE" || return 1
+  make_complete_release "$OLD_RELEASE" || return 1
+  link_release "$CURRENT_LINK" "$CANDIDATE_RELEASE" || return 1
+  link_release "$PREVIOUS_LINK" "$OLD_RELEASE" || return 1
+  unsafe_path=$CURRENT_LINK
+  safe_path=$PREVIOUS_LINK
+  safe_id=$OLD_RELEASE
+  if [ "$unsafe_side" = previous ]; then
+    unsafe_path=$PREVIOUS_LINK
+    safe_path=$CURRENT_LINK
+    safe_id=$CANDIDATE_RELEASE
+  fi
+  /bin/rm -f -- "$unsafe_path" || return 1
+  outside="$TEST_ROOT/no-journal-unsafe-$unsafe_side-$unsafe_kind-outside"
+  /bin/mkdir -p "$outside" || return 1
+  printf 'keep outside\n' >"$outside/sentinel" || return 1
+  case "$unsafe_kind" in
+    malformed)
+      /bin/ln -s 'releases/not-a-release-id' "$unsafe_path" || return 1
+      ;;
+    out-of-root)
+      /bin/ln -s "$outside" "$unsafe_path" || return 1
+      ;;
+    non-symlink)
+      /bin/mkdir "$unsafe_path" || return 1
+      printf 'keep link path\n' >"$unsafe_path/sentinel" || return 1
+      ;;
+    unowned)
+      /bin/ln -s "$outside" "$RELEASES_DIR/$UNRELATED_RELEASE" || return 1
+      /bin/ln -s "releases/$UNRELATED_RELEASE" "$unsafe_path" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  staging_id=.staging-1786660000-1305
+  make_incomplete_staging_release "$staging_id" || return 1
+
+  ! recover_activation || return 1
+
+  assert_release_link "$safe_id" "$safe_path" || return 1
+  [ -d "$RELEASES_DIR/$staging_id" ] || return 1
+  assert_eq 'partial install' "$(<"$RELEASES_DIR/$staging_id/partial/sentinel")" || return 1
+  assert_eq 'keep outside' "$(<"$outside/sentinel")" || return 1
+  case "$unsafe_kind" in
+    non-symlink) assert_eq 'keep link path' "$(<"$unsafe_path/sentinel")" ;;
+    *) [ -L "$unsafe_path" ] ;;
+  esac
+)
+
+test_read_only_commands_do_not_run_no_journal_cleanup() (
+  prepare_update_case read-only-no-journal-cleanup || return 1
+  make_complete_release "$CANDIDATE_RELEASE" || return 1
+  link_release "$CURRENT_LINK" "$CANDIDATE_RELEASE" || return 1
+  set_service_release "$CANDIDATE_RELEASE"
+  staging_id=.staging-1786660000-1306
+  make_incomplete_staging_release "$staging_id" || return 1
+
+  cmd_status >/dev/null || return 1
+  cmd_open || return 1
+
+  [ -d "$RELEASES_DIR/$staging_id" ] || return 1
+  assert_eq 'partial install' "$(<"$RELEASES_DIR/$staging_id/partial/sentinel")" || return 1
+  [ ! -e "$LOCK_DIR" ] && [ ! -L "$LOCK_DIR" ]
+)
+
 test_recovery_from_old_switches_restarts_and_commits_candidate() (
   prepare_activation_case recover-from-old || return 1
   type recover_activation >/dev/null 2>&1 || return 1
@@ -674,6 +853,19 @@ run_test 'journal write publishes exactly three strictly readable keys' test_wri
 run_test 'invalid journal input preserves the published journal' test_write_activation_invalid_input_preserves_existing_journal
 run_test 'journal write never follows its temporary symlink' test_write_activation_does_not_follow_a_temporary_symlink
 run_test 'journal reader refuses a symlink without mutation' test_read_activation_rejects_a_journal_symlink_without_mutation
+run_test 'no-journal recovery keeps the complete current winner and cleans interrupted staging' test_no_journal_complete_current_wins_and_finishes_staging_cleanup
+run_test 'no-journal recovery restores a missing current from complete previous' test_no_journal_missing_current_restores_complete_previous
+run_test 'no-journal recovery replaces an owned current missing completion' test_no_journal_owned_incomplete_current_uses_complete_previous missing-complete
+run_test 'no-journal recovery replaces an owned current with an invalid manifest' test_no_journal_owned_incomplete_current_uses_complete_previous invalid-manifest
+run_test 'no-journal cleanup removes only exact incomplete physical staging children' test_no_journal_cleanup_removes_only_exact_incomplete_physical_staging_children
+run_test 'malformed current fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup current malformed
+run_test 'out-of-root current fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup current out-of-root
+run_test 'non-symlink current fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup current non-symlink
+run_test 'unowned current target fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup current unowned
+run_test 'malformed previous fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup previous malformed
+run_test 'out-of-root previous fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup previous out-of-root
+run_test 'non-symlink previous fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup previous non-symlink
+run_test 'unowned previous target fails before no-journal cleanup' test_no_journal_unsafe_link_fails_before_staging_cleanup previous unowned
 run_test 'recovery from old switches, restarts, verifies, commits, and prunes' test_recovery_from_old_switches_restarts_and_commits_candidate
 run_test 'recovery force-restarts an already current healthy candidate' test_recovery_forces_restart_when_candidate_is_already_current
 run_test 'first-install recovery switches, starts, and verifies candidate' test_first_install_recovery_switches_starts_and_verifies_candidate
@@ -691,5 +883,6 @@ run_test 'update keeps a healthy same-version service PID unchanged' test_update
 run_test 'update starts and verifies a stopped same-version service' test_update_starts_and_verifies_a_stopped_same_version
 run_test 'update stages and transactionally activates a new release' test_update_stages_and_activates_a_new_release_transactionally
 run_test 'read-only status and open report and preserve an activation journal' test_read_only_status_and_open_report_and_preserve_activation_journal
+run_test 'read-only status and open leave no-journal staging untouched' test_read_only_commands_do_not_run_no_journal_cleanup
 
 finish_tests

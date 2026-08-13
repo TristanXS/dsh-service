@@ -147,7 +147,7 @@ Automated Bash syntax checks and isolated tests ran on macOS 26.5.2 (build 25F84
 
 ## Run the repository checks
 
-Contributors can run the same checks as CI:
+Contributors can run the CI checks plus a whitespace check:
 
 ```bash
 /bin/bash -n bin/dsh-mac libexec/dsh-mac-run install.sh tests/*.sh
