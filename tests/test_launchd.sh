@@ -124,6 +124,15 @@ printf "%s\n" "$log_line" >>"$DSH_TEST_LSOF_LOG"
 [ "$has_np" -eq 1 ] && [ "$has_listen" -eq 1 ] && [ "$has_fields" -eq 1 ] || exit 90
 [ -n "$query" ] || exit 91
 
+configured_status=$(<"$DSH_TEST_LSOF_STATUS_FILE")
+configured_diagnostic=$(<"$DSH_TEST_LSOF_DIAGNOSTIC_FILE")
+if [ -n "$configured_diagnostic" ]; then
+  printf "%s\n" "$configured_diagnostic" >&2
+fi
+if [ "$configured_status" -ne 0 ]; then
+  exit "$configured_status"
+fi
+
 delay=$(<"$DSH_TEST_LISTENER_DELAY_FILE")
 if [ "$delay" -gt 0 ]; then
   delay=$((delay - 1))
@@ -218,6 +227,8 @@ prepare_launchd_case() {
   export DSH_TEST_OPEN_STATUS_FILE="$TEST_ROOT/$case_name-open-status"
   export DSH_TEST_JOB_DELAY_FILE="$TEST_ROOT/$case_name-job-delay"
   export DSH_TEST_LISTENER_DELAY_FILE="$TEST_ROOT/$case_name-listener-delay"
+  export DSH_TEST_LSOF_STATUS_FILE="$TEST_ROOT/$case_name-lsof-status"
+  export DSH_TEST_LSOF_DIAGNOSTIC_FILE="$TEST_ROOT/$case_name-lsof-diagnostic"
 
   : >"$DSH_TEST_LAUNCHCTL_LOG"
   : >"$DSH_TEST_LSOF_LOG"
@@ -232,6 +243,8 @@ prepare_launchd_case() {
   printf '0\n' >"$DSH_TEST_OPEN_STATUS_FILE"
   printf '0\n' >"$DSH_TEST_JOB_DELAY_FILE"
   printf '0\n' >"$DSH_TEST_LISTENER_DELAY_FILE"
+  printf '0\n' >"$DSH_TEST_LSOF_STATUS_FILE"
+  : >"$DSH_TEST_LSOF_DIAGNOSTIC_FILE"
 
   unset DSH_TEST_AUTO_LISTENER DSH_TEST_HEALTH_AFTER_TRANSITION
   unset DSH_TEST_KILL_FAIL DSH_TEST_GRACEFUL_MODE DSH_TEST_NEXT_PID
@@ -263,6 +276,15 @@ set_listeners() {
     shift_count=$((shift_count + 1))
   done
   [ "$shift_count" -eq "$#" ]
+}
+
+set_lsof_failure() {
+  printf '%s\n' "$1" >"$DSH_TEST_LSOF_STATUS_FILE"
+  printf '%s\n' "$2" >"$DSH_TEST_LSOF_DIAGNOSTIC_FILE"
+}
+
+plist_identity() {
+  /usr/bin/stat -f '%i:%m' "$PLIST_PATH"
 }
 
 assert_log_has_line() {
@@ -422,6 +444,43 @@ test_health_distinguishes_unloaded_and_starting() (
   assert_health starting 1
 )
 
+test_health_fails_closed_for_lsof_status_two_without_output() (
+  prepare_launchd_case health-lsof-status-two || return 1
+  set_job 1 101
+  set_listeners '101|127.0.0.1:3080' || return 1
+  set_lsof_failure 2 ''
+
+  assert_health conflict 1
+)
+
+test_health_fails_closed_for_lsof_status_one_with_diagnostic() (
+  prepare_launchd_case health-lsof-diagnostic || return 1
+  set_job 1 101
+  set_listeners '101|127.0.0.1:3080' || return 1
+  set_lsof_failure 1 'lsof: unexpected diagnostic'
+
+  assert_health conflict 1
+)
+
+test_wait_for_health_stops_after_elapsed_deadline() (
+  probe_log="$TEST_ROOT/slow-health-probes.log"
+  : >"$probe_log"
+  WAIT_ATTEMPTS=2
+  WAIT_INTERVAL=1
+  WAIT_TIMEOUT_SECONDS=1
+  health_state() {
+    printf 'probe\n' >>"$probe_log"
+    /bin/sleep 1
+    return 1
+  }
+
+  started_at=$SECONDS
+  ! wait_for_health || return 1
+  elapsed=$((SECONDS - started_at))
+  assert_eq 1 "$(/usr/bin/awk 'END { print NR }' "$probe_log")" || return 1
+  [ "$elapsed" -ge 1 ] && [ "$elapsed" -le 2 ]
+)
+
 test_start_bootstraps_an_unloaded_service() (
   prepare_launchd_case start-bootstrap || return 1
   export DSH_TEST_NEXT_PID=202
@@ -521,6 +580,20 @@ test_stop_treats_an_unloaded_service_as_success() (
   assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG"
 )
 
+test_stop_does_not_treat_lsof_error_as_old_listener_release() (
+  prepare_launchd_case stop-lsof-error || return 1
+  set_job 1 101
+  set_listeners '101|127.0.0.1:3080' || return 1
+  export DSH_TEST_BOOTOUT_LISTENER_DELAY=99
+  export DSH_MAC_WAIT_ATTEMPTS=2
+  init_command_paths
+  set_lsof_failure 2 ''
+
+  ! stop_service || return 1
+  assert_log_has_line "bootout|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
+  assert_eq '101|127.0.0.1:3080' "$(<"$DSH_TEST_LISTENERS_FILE")"
+)
+
 test_start_refuses_foreign_listener_without_mutation_or_kill() (
   prepare_launchd_case start-conflict || return 1
   type start_service >/dev/null 2>&1 || return 1
@@ -529,7 +602,11 @@ test_start_refuses_foreign_listener_without_mutation_or_kill() (
   : >"$shell_kill_log"
   kill() { printf '%s\n' "$*" >>"$shell_kill_log"; }
 
+  [ ! -e "$PLIST_PATH" ] || return 1
   ! start_service || return 1
+  [ ! -e "$PLIST_PATH" ] || return 1
+  [ ! -e "$LOG_DIR" ] || return 1
+  [ ! -e "$WORKSPACE_DIR" ] || return 1
   assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG" || return 1
   assert_eq '' "$(<"$shell_kill_log")"
 )
@@ -543,9 +620,43 @@ test_restart_refuses_foreign_listener_without_mutation_or_kill() (
   : >"$shell_kill_log"
   kill() { printf '%s\n' "$*" >>"$shell_kill_log"; }
 
+  /bin/mkdir -p "${PLIST_PATH%/*}" || return 1
+  printf 'existing plist sentinel\n' >"$PLIST_PATH" || return 1
+  /usr/bin/touch -t 200001010101 "$PLIST_PATH" || return 1
+  before_identity=$(plist_identity) || return 1
+
   ! restart_service || return 1
+  assert_eq 'existing plist sentinel' "$(<"$PLIST_PATH")" || return 1
+  assert_eq "$before_identity" "$(plist_identity)" || return 1
   assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG" || return 1
   assert_eq '' "$(<"$shell_kill_log")"
+)
+
+test_start_lsof_error_makes_no_manager_owned_mutation() (
+  prepare_launchd_case start-lsof-error || return 1
+  set_lsof_failure 2 ''
+
+  ! start_service || return 1
+  [ ! -e "$PLIST_PATH" ] || return 1
+  [ ! -e "$LOG_DIR" ] || return 1
+  [ ! -e "$WORKSPACE_DIR" ] || return 1
+  assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG"
+)
+
+test_restart_lsof_diagnostic_preserves_existing_plist() (
+  prepare_launchd_case restart-lsof-error || return 1
+  set_job 1 101
+  set_listeners '101|127.0.0.1:3080' || return 1
+  set_lsof_failure 1 'lsof: unexpected diagnostic'
+  /bin/mkdir -p "${PLIST_PATH%/*}" || return 1
+  printf 'existing plist sentinel\n' >"$PLIST_PATH" || return 1
+  /usr/bin/touch -t 200001010101 "$PLIST_PATH" || return 1
+  before_identity=$(plist_identity) || return 1
+
+  ! restart_service || return 1
+  assert_eq 'existing plist sentinel' "$(<"$PLIST_PATH")" || return 1
+  assert_eq "$before_identity" "$(plist_identity)" || return 1
+  assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG"
 )
 
 run_test 'plist is valid and preserves XML-sensitive paths' test_plist_is_valid_and_preserves_special_paths
@@ -556,6 +667,9 @@ run_test 'different listener identity is a conflict' test_health_reports_conflic
 run_test 'IPv4 and IPv6 wildcard listeners are conflicts' test_health_reports_conflict_for_every_wildcard_listener
 run_test 'matching listener with failed HTTP is unhealthy' test_health_reports_unhealthy_when_matching_http_fails
 run_test 'health distinguishes unloaded and starting states' test_health_distinguishes_unloaded_and_starting
+run_test 'health fails closed for lsof status 2 without output' test_health_fails_closed_for_lsof_status_two_without_output
+run_test 'health fails closed for lsof status 1 with diagnostics' test_health_fails_closed_for_lsof_status_one_with_diagnostic
+run_test 'health wait stops after its elapsed deadline' test_wait_for_health_stops_after_elapsed_deadline
 run_test 'start bootstraps an unloaded service' test_start_bootstraps_an_unloaded_service
 run_test 'start kickstarts a loaded job without PID and without -k' test_start_kickstarts_loaded_job_without_pid_and_without_k
 run_test 'restart uses graceful launchctl signaling and a new identity' test_restart_uses_graceful_launchctl_signal_and_new_identity
@@ -563,7 +677,10 @@ run_test 'start gracefully restarts its unhealthy owned listener' test_start_res
 run_test 'restart falls back once through bootout and bootstrap' test_restart_falls_back_once_to_bootout_and_bootstrap
 run_test 'stop waits for job removal and old listener release' test_stop_waits_for_job_and_old_listener_to_disappear
 run_test 'stop succeeds when already unloaded' test_stop_treats_an_unloaded_service_as_success
+run_test 'stop does not mistake an lsof error for listener release' test_stop_does_not_treat_lsof_error_as_old_listener_release
 run_test 'start refuses a foreign listener without mutation or kill' test_start_refuses_foreign_listener_without_mutation_or_kill
 run_test 'restart refuses a foreign listener without mutation or kill' test_restart_refuses_foreign_listener_without_mutation_or_kill
+run_test 'start makes no manager-owned mutation on lsof error' test_start_lsof_error_makes_no_manager_owned_mutation
+run_test 'restart preserves an existing plist on lsof diagnostics' test_restart_lsof_diagnostic_preserves_existing_plist
 
 finish_tests

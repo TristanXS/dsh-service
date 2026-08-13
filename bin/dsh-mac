@@ -21,6 +21,7 @@ init_command_paths() {
   TAIL_BIN=/usr/bin/tail
   WAIT_ATTEMPTS=30
   WAIT_INTERVAL=1
+  WAIT_TIMEOUT_SECONDS=30
   if [ "${DSH_MAC_TESTING:-0}" = 1 ]; then
     LAUNCHCTL_BIN="${DSH_MAC_LAUNCHCTL_BIN:-$LAUNCHCTL_BIN}"
     PLUTIL_BIN="${DSH_MAC_PLUTIL_BIN:-$PLUTIL_BIN}"
@@ -30,6 +31,7 @@ init_command_paths() {
     TAIL_BIN="${DSH_MAC_TAIL_BIN:-$TAIL_BIN}"
     WAIT_ATTEMPTS="${DSH_MAC_WAIT_ATTEMPTS:-3}"
     WAIT_INTERVAL="${DSH_MAC_WAIT_INTERVAL:-0}"
+    WAIT_TIMEOUT_SECONDS="${DSH_MAC_WAIT_TIMEOUT_SECONDS:-30}"
   fi
 }
 
@@ -170,9 +172,12 @@ listener_records() {
     *) return 1 ;;
   esac
 
-  lsof_output=$("$LSOF_BIN" -nP -a "$selector" -sTCP:LISTEN -Fpn 2>/dev/null)
+  lsof_output=$("$LSOF_BIN" -nP -a "$selector" -sTCP:LISTEN -Fpn 2>&1)
   lsof_status=$?
-  if [ "$lsof_status" -ne 0 ] && [ -n "$lsof_output" ]; then
+  if [ "$lsof_status" -ne 0 ]; then
+    if [ "$lsof_status" -eq 1 ] && [ -z "$lsof_output" ]; then
+      return 0
+    fi
     return 1
   fi
   [ -n "$lsof_output" ] || return 0
@@ -237,7 +242,7 @@ pid_is_listening() {
   local wanted_pid active_pids active_pid
   wanted_pid=$1
   [ -n "$wanted_pid" ] || return 1
-  active_pids=$(listener_pids all) || return 1
+  active_pids=$(listener_pids all) || return 2
   while IFS= read -r active_pid || [ -n "$active_pid" ]; do
     [ "$active_pid" = "$wanted_pid" ] && return 0
   done <<<"$active_pids"
@@ -297,14 +302,17 @@ health_state() {
 
 wait_for_health() {
   [ "$#" -eq 0 ] || return 1
-  local wait_attempt
+  local wait_attempt wait_started wait_deadline
   wait_attempt=0
+  wait_started=$SECONDS
+  wait_deadline=$((wait_started + WAIT_TIMEOUT_SECONDS))
   while [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; do
+    [ "$SECONDS" -lt "$wait_deadline" ] || return 1
     health_state >/dev/null && return 0
     wait_attempt=$((wait_attempt + 1))
-    if [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; then
-      /bin/sleep "$WAIT_INTERVAL"
-    fi
+    [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ] || return 1
+    [ "$SECONDS" -lt "$wait_deadline" ] || return 1
+    /bin/sleep "$WAIT_INTERVAL"
   done
   return 1
 }
@@ -318,8 +326,13 @@ wait_for_service_absence() {
     job_present=0
     listener_present=0
     service_loaded && job_present=1
-    if [ -n "$old_pid" ] && pid_is_listening "$old_pid"; then
-      listener_present=1
+    if [ -n "$old_pid" ]; then
+      pid_is_listening "$old_pid"
+      case "$?" in
+        0) listener_present=1 ;;
+        1) ;;
+        *) return 1 ;;
+      esac
     fi
     if [ "$job_present" -eq 0 ] && [ "$listener_present" -eq 0 ]; then
       return 0
@@ -368,14 +381,16 @@ bootstrap_service() {
 start_service() {
   [ "$#" -eq 0 ] || return 1
   local current_health current_pid
-  ensure_plist || return 1
   current_health=$(health_state)
   case "$current_health" in
-    healthy) return 0 ;;
     conflict)
       die 'port 3080 is owned by another listener'
       return 1
       ;;
+  esac
+  ensure_plist || return 1
+  case "$current_health" in
+    healthy) return 0 ;;
     unloaded)
       bootstrap_service
       ;;
@@ -430,15 +445,18 @@ stop_service() {
 restart_service() {
   [ "$#" -eq 0 ] || return 1
   local restart_health old_pid
-  ensure_plist || return 1
   restart_health=$(health_state)
   case "$restart_health" in
     conflict)
       die 'port 3080 is owned by another listener'
       return 1
       ;;
-    unloaded) bootstrap_service; return $? ;;
   esac
+  ensure_plist || return 1
+  [ "$restart_health" != unloaded ] || {
+    bootstrap_service
+    return $?
+  }
 
   old_pid=$(launchd_pid 2>/dev/null) || old_pid=
   if [ -n "$old_pid" ]; then

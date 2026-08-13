@@ -51,6 +51,7 @@ test_command_overrides_are_honored_in_tests() (
   DSH_MAC_TAIL_BIN="$TEST_ROOT/bin/tail-override"
   DSH_MAC_WAIT_ATTEMPTS=7
   DSH_MAC_WAIT_INTERVAL=2
+  DSH_MAC_WAIT_TIMEOUT_SECONDS=9
   init_command_paths
   assert_eq "$DSH_MAC_LAUNCHCTL_BIN" "$LAUNCHCTL_BIN" || return 1
   assert_eq "$DSH_MAC_PLUTIL_BIN" "$PLUTIL_BIN" || return 1
@@ -59,7 +60,8 @@ test_command_overrides_are_honored_in_tests() (
   assert_eq "$DSH_MAC_OPEN_BIN" "$OPEN_BIN" || return 1
   assert_eq "$DSH_MAC_TAIL_BIN" "$TAIL_BIN" || return 1
   assert_eq 7 "$WAIT_ATTEMPTS" || return 1
-  assert_eq 2 "$WAIT_INTERVAL"
+  assert_eq 2 "$WAIT_INTERVAL" || return 1
+  assert_eq 9 "$WAIT_TIMEOUT_SECONDS"
 )
 
 test_command_overrides_are_ignored_in_production() (
@@ -67,6 +69,7 @@ test_command_overrides_are_ignored_in_production() (
   DSH_MAC_LAUNCHCTL_BIN="$TEST_ROOT/bin/not-launchctl"
   DSH_MAC_WAIT_ATTEMPTS=99
   DSH_MAC_WAIT_INTERVAL=99
+  DSH_MAC_WAIT_TIMEOUT_SECONDS=99
   init_command_paths
   assert_eq /bin/launchctl "$LAUNCHCTL_BIN" || return 1
   assert_eq /usr/bin/plutil "$PLUTIL_BIN" || return 1
@@ -75,7 +78,8 @@ test_command_overrides_are_ignored_in_production() (
   assert_eq /usr/bin/open "$OPEN_BIN" || return 1
   assert_eq /usr/bin/tail "$TAIL_BIN" || return 1
   assert_eq 30 "$WAIT_ATTEMPTS" || return 1
-  assert_eq 1 "$WAIT_INTERVAL"
+  assert_eq 1 "$WAIT_INTERVAL" || return 1
+  assert_eq 30 "$WAIT_TIMEOUT_SECONDS"
 )
 
 test_node_22_19_is_supported() {
