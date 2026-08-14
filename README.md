@@ -143,7 +143,7 @@ The service listens only on the Internet Protocol version 4 (IPv4) loopback addr
 
 This project is an unofficial public alpha with no affiliation to DeepSeek. DeepSeek does not endorse or support it. DeepSeek, DeepSeek Harness, and related trademarks belong to their respective owners.
 
-Automated Bash syntax checks and isolated tests ran on macOS 26.5.2 (build 25F84), arm64. The guarded live install smoke did not run because port `3080` already had a listener. This project does not claim a successful live smoke on that host.
+Automated Bash syntax checks and isolated tests ran on macOS 26.5.2 (build 25F84), arm64. The guarded live smoke completed on that host with DSH `0.1.0-rc.6`. It verified install, status, restart, same-version update, stop, start, and uninstall. It also verified removal of every manager-owned path and preservation of the existing `~/.dsh` directory.
 
 ## Run the repository checks
 
