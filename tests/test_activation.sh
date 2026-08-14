@@ -1,12 +1,13 @@
 #!/bin/bash
+# shellcheck disable=SC1090,SC1091,SC2016,SC2030,SC2031,SC2119,SC2120,SC2329
 set -u
 
-TESTS_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-CLI_PATH="$TESTS_DIR/../bin/dsh-mac"
+TESTS_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
-export DSH_MAC_SOURCE_ONLY=1
+export DSH_SERVICE_SOURCE_ONLY=1
 if ! . "$CLI_PATH"; then
   printf 'could not source CLI: %s\n' "$CLI_PATH" >&2
   exit 1
@@ -22,7 +23,7 @@ prepare_activation_home() {
   export HOME="$TEST_ROOT/home-$activation_name"
   /bin/mkdir -p "$HOME" || return 1
   init_paths
-  /bin/mkdir -p "$DSH_MAC_ROOT" || return 1
+  /bin/mkdir -p "$DSH_SERVICE_ROOT" || return 1
 }
 
 write_literal_activation() {
@@ -628,7 +629,7 @@ printf "@deepseek-ai/dsh %s\n" "$version"'
   write_fake npm '
 if [ "${1:-}" = view ]; then
   [ "${2:-}" = @deepseek-ai/dsh@latest ] && [ "${3:-}" = version ] && [ "$#" -eq 3 ] || exit 70
-  test_manager_root="$HOME/Library/Application Support/dsh-mac"
+  test_manager_root="$HOME/Library/Application Support/dsh-service"
   [ -d "$test_manager_root/.lock" ] && [ ! -L "$test_manager_root/.lock" ] || exit 71
   [ -f "$test_manager_root/.lock/pid" ] || exit 72
   if [ -n "${DSH_TEST_EXPECT_CURRENT_BEFORE_VIEW:-}" ]; then
@@ -676,7 +677,7 @@ prepare_update_case() {
   : >"$DSH_TEST_OPENED_URL"
   unset DSH_TEST_EXPECT_CURRENT_BEFORE_VIEW
 
-  /bin/mkdir -p "$DSH_MAC_ROOT/libexec" || return 1
+  /bin/mkdir -p "$DSH_SERVICE_ROOT/libexec" || return 1
   {
     printf '%s\n' '#!/bin/bash' 'set -u'
     printf '%s\n' '[ "${1:-}" = --check ] && [ "$#" -eq 1 ] || exit 64'
@@ -685,12 +686,12 @@ prepare_update_case() {
   } >"$RUNNER_TEMPLATE" || return 1
   /bin/chmod 0755 "$RUNNER_TEMPLATE" || return 1
 
-  export DSH_MAC_LAUNCHCTL_BIN=/usr/bin/true
-  export DSH_MAC_PLUTIL_BIN=/usr/bin/true
-  export DSH_MAC_LSOF_BIN=/usr/bin/true
-  export DSH_MAC_CURL_BIN=/usr/bin/true
-  export DSH_MAC_OPEN_BIN="$TEST_ROOT/bin/update-open"
-  export DSH_MAC_TAIL_BIN=/usr/bin/true
+  export DSH_SERVICE_LAUNCHCTL_BIN=/usr/bin/true
+  export DSH_SERVICE_PLUTIL_BIN=/usr/bin/true
+  export DSH_SERVICE_LSOF_BIN=/usr/bin/true
+  export DSH_SERVICE_CURL_BIN=/usr/bin/true
+  export DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/update-open"
+  export DSH_SERVICE_TAIL_BIN=/usr/bin/true
   init_command_paths
 }
 

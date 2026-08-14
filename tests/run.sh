@@ -1,15 +1,16 @@
 #!/bin/bash
+# shellcheck disable=SC1091
 set -u
 
-TESTS_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-REPO_ROOT="$(CDPATH= cd -- "$TESTS_DIR/.." && pwd)"
+TESTS_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+REPO_ROOT="$(CDPATH='' cd -- "$TESTS_DIR/.." && pwd)"
 
 . "$TESTS_DIR/helpers.sh"
 
 repository_is_complete() {
   for executable_path in \
-    "$REPO_ROOT/bin/dsh-mac" \
-    "$REPO_ROOT/libexec/dsh-mac-run" \
+    "$REPO_ROOT/bin/dsh-service" \
+    "$REPO_ROOT/libexec/dsh-service-run" \
     "$REPO_ROOT/install.sh"; do
     [ -x "$executable_path" ] || {
       printf 'required executable is missing: %s\n' "$executable_path" >&2

@@ -1,13 +1,14 @@
 #!/bin/bash
+# shellcheck disable=SC1090,SC1091,SC2016,SC2030,SC2031
 set -u
 
-TESTS_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-CLI_PATH="$TESTS_DIR/../bin/dsh-mac"
-RUNNER_SOURCE="$TESTS_DIR/../libexec/dsh-mac-run"
+TESTS_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+CLI_PATH="$TESTS_DIR/../bin/dsh-service"
+RUNNER_SOURCE="$TESTS_DIR/../libexec/dsh-service-run"
 
 . "$TESTS_DIR/helpers.sh"
 
-export DSH_MAC_SOURCE_ONLY=1
+export DSH_SERVICE_SOURCE_ONLY=1
 if ! . "$CLI_PATH"; then
   printf 'could not source CLI: %s\n' "$CLI_PATH" >&2
   exit 1
@@ -145,9 +146,9 @@ prepare_runtime_home() {
 
 install_manager_runner() {
   [ -f "$RUNNER_SOURCE" ] && [ -x "$RUNNER_SOURCE" ] || return 1
-  /bin/mkdir -p "$DSH_MAC_ROOT/libexec" || return 1
-  /bin/cp "$RUNNER_SOURCE" "$DSH_MAC_ROOT/libexec/dsh-mac-run" || return 1
-  /bin/chmod 0755 "$DSH_MAC_ROOT/libexec/dsh-mac-run"
+  /bin/mkdir -p "$DSH_SERVICE_ROOT/libexec" || return 1
+  /bin/cp "$RUNNER_SOURCE" "$DSH_SERVICE_ROOT/libexec/dsh-service-run" || return 1
+  /bin/chmod 0755 "$DSH_SERVICE_ROOT/libexec/dsh-service-run"
 }
 
 count_log_line() {
@@ -340,7 +341,7 @@ test_stage_records_runtime_and_validated_cli_before_completion() (
 
 test_stage_writes_completion_only_after_runner_check() (
   prepare_runtime_home runner-order || return 1
-  /bin/mkdir -p "$DSH_MAC_ROOT/libexec" || return 1
+  /bin/mkdir -p "$DSH_SERVICE_ROOT/libexec" || return 1
   runner_probe_log="$TEST_ROOT/runner-probe.log"
   export DSH_TEST_RUNNER_PROBE_LOG="$runner_probe_log"
   {
@@ -350,8 +351,8 @@ test_stage_writes_completion_only_after_runner_check() (
     printf '%s\n' '[ ! -e "$probe_dir/.complete" ] || exit 90'
     printf '%s\n' 'printf "checked\n" >>"$DSH_TEST_RUNNER_PROBE_LOG"'
     printf '%s\n' 'printf "0.1.0-rc.6\n"'
-  } >"$DSH_MAC_ROOT/libexec/dsh-mac-run" || return 1
-  /bin/chmod 0755 "$DSH_MAC_ROOT/libexec/dsh-mac-run" || return 1
+  } >"$DSH_SERVICE_ROOT/libexec/dsh-service-run" || return 1
+  /bin/chmod 0755 "$DSH_SERVICE_ROOT/libexec/dsh-service-run" || return 1
 
   stage_successfully || return 1
   assert_eq checked "$(<"$runner_probe_log")" || return 1
@@ -542,7 +543,7 @@ test_atomic_release_link_replaces_existing_current_symlink() (
   assert_eq "releases/$new_release" "$actual_target" || test_status=1
   assert_no_release_link_temps "$RELEASES_DIR/$old_release" || test_status=1
   assert_no_release_link_temps "$RELEASES_DIR" || test_status=1
-  assert_no_release_link_temps "$DSH_MAC_ROOT" || test_status=1
+  assert_no_release_link_temps "$DSH_SERVICE_ROOT" || test_status=1
   return "$test_status"
 )
 
@@ -559,20 +560,20 @@ test_atomic_release_link_replaces_existing_previous_symlink() (
   assert_eq "releases/$new_release" "$actual_target" || test_status=1
   assert_no_release_link_temps "$RELEASES_DIR/$old_release" || test_status=1
   assert_no_release_link_temps "$RELEASES_DIR" || test_status=1
-  assert_no_release_link_temps "$DSH_MAC_ROOT" || test_status=1
+  assert_no_release_link_temps "$DSH_SERVICE_ROOT" || test_status=1
   return "$test_status"
 )
 
 test_installed_cli_uses_manager_owned_runner_without_sibling_libexec() (
   prepare_runtime_home installed-copy || return 1
   install_manager_runner || return 1
-  installed_cli="$HOME/.local/bin/dsh-mac"
+  installed_cli="$HOME/.local/bin/dsh-service"
   /bin/mkdir -p "$(dirname "$installed_cli")" || return 1
   /bin/cp "$CLI_PATH" "$installed_cli" || return 1
   /bin/chmod 0755 "$installed_cli" || return 1
   [ ! -e "$HOME/.local/libexec" ] || return 1
 
-  DSH_MAC_SOURCE_ONLY=1 /bin/bash -c '
+  DSH_SERVICE_SOURCE_ONLY=1 /bin/bash -c '
     . "$1" || exit 1
     NODE_BIN=$2
     NPM_BIN=$3
@@ -602,7 +603,7 @@ test_runner_normal_mode_requires_completion_before_exec() (
   assert_eq '' "$(<"$DSH_TEST_NODE_LOG")" || return 1
   : >"$RUNNER_RELEASE/.complete"
   "$RUNNER_RELEASE/run" || return 1
-  physical_release=$(CDPATH= cd -P -- "$RUNNER_RELEASE" && pwd) || return 1
+  physical_release=$(CDPATH='' cd -P -- "$RUNNER_RELEASE" && pwd) || return 1
   expected_call="$physical_release/node_modules/@deepseek-ai/dsh/lib/bin.js|web|--host|127.0.0.1|--port|3080"
   assert_eq "$expected_call" "$(<"$DSH_TEST_NODE_LOG")"
 )

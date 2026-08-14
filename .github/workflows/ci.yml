@@ -16,8 +16,8 @@ jobs:
       - name: Install ShellCheck
         run: brew install shellcheck
       - name: Check Bash syntax
-        run: /bin/bash -n bin/dsh-mac libexec/dsh-mac-run install.sh tests/*.sh
+        run: /bin/bash -n bin/dsh-service libexec/dsh-service-run install.sh tests/*.sh
       - name: Run ShellCheck
-        run: shellcheck -s bash bin/dsh-mac libexec/dsh-mac-run install.sh tests/*.sh
+        run: shellcheck -s bash bin/dsh-service libexec/dsh-service-run install.sh tests/*.sh
       - name: Run isolated tests
         run: /bin/bash tests/run.sh

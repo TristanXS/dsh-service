@@ -1,8 +1,9 @@
 #!/bin/bash
+# shellcheck disable=SC1091,SC2016
 set -u
 
-TESTS_DIR="$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)"
-CLI_PATH="$TESTS_DIR/../bin/dsh-mac"
+TESTS_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd)"
+CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
@@ -17,11 +18,11 @@ assert_contains() {
 }
 
 home_inventory() {
-  (CDPATH= cd -P -- "$HOME" && /usr/bin/find . -print | LC_ALL=C /usr/bin/sort)
+  (CDPATH='' cd -P -- "$HOME" && /usr/bin/find . -print | LC_ALL=C /usr/bin/sort)
 }
 
 run_cli() {
-  CLI_OUTPUT=$(DSH_MAC_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" "$@" 2>&1)
+  CLI_OUTPUT=$(DSH_SERVICE_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" "$@" 2>&1)
   CLI_STATUS=$?
 }
 
@@ -43,7 +44,7 @@ case "${1:-}" in
     [ "$#" -eq 2 ] || exit 90
     case "$2" in
       gui/[0-9]*)
-        case "$2" in */dev.dsh-mac.web) ;; *) exit 0 ;; esac
+        case "$2" in */dev.dsh-service.web) ;; *) exit 0 ;; esac
         ;;
     esac
     [ "$(<"$DSH_TEST_LOADED")" = loaded ] || exit 113
@@ -110,15 +111,15 @@ prepare_service_case() {
   printf '4242|127.0.0.1:3080\n' >"$DSH_TEST_LISTENERS"
   printf '1\n' >"$DSH_TEST_HTTP_OK"
   write_service_fakes
-  export DSH_MAC_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
-  export DSH_MAC_PLUTIL_BIN=/usr/bin/true
-  export DSH_MAC_LSOF_BIN="$TEST_ROOT/bin/lsof"
-  export DSH_MAC_CURL_BIN="$TEST_ROOT/bin/curl"
-  export DSH_MAC_OPEN_BIN="$TEST_ROOT/bin/open"
-  export DSH_MAC_TAIL_BIN="$TEST_ROOT/bin/tail"
-  export DSH_MAC_WAIT_ATTEMPTS=3
-  export DSH_MAC_WAIT_INTERVAL=0
-  export DSH_MAC_WAIT_TIMEOUT_SECONDS=3
+  export DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
+  export DSH_SERVICE_PLUTIL_BIN=/usr/bin/true
+  export DSH_SERVICE_LSOF_BIN="$TEST_ROOT/bin/lsof"
+  export DSH_SERVICE_CURL_BIN="$TEST_ROOT/bin/curl"
+  export DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/open"
+  export DSH_SERVICE_TAIL_BIN="$TEST_ROOT/bin/tail"
+  export DSH_SERVICE_WAIT_ATTEMPTS=3
+  export DSH_SERVICE_WAIT_INTERVAL=0
+  export DSH_SERVICE_WAIT_TIMEOUT_SECONDS=3
 }
 
 write_runtime_fakes() {
@@ -147,7 +148,7 @@ printf "@deepseek-ai/dsh %s\n" "$version"'
 printf "%s\n" "$*" >>"$DSH_TEST_NPM_LOG"
 if [ "${1:-}" = view ]; then
   [ "$#" -eq 3 ] && [ "$2" = @deepseek-ai/dsh@latest ] && [ "$3" = version ] || exit 70
-  manager_root="$HOME/Library/Application Support/dsh-mac"
+  manager_root="$HOME/Library/Application Support/dsh-service"
   [ -f "$manager_root/.lock/pid" ] || exit 71
   [ "${DSH_TEST_NPM_VIEW_FAIL:-0}" != 1 ] || exit 69
   printf "%s\n" "${DSH_TEST_LATEST_VERSION:-1.2.3}"
@@ -192,7 +193,7 @@ prepare_install_case() {
 }
 
 release_count() {
-  releases="$HOME/Library/Application Support/dsh-mac/releases"
+  releases="$HOME/Library/Application Support/dsh-service/releases"
   [ -d "$releases" ] || {
     printf '0\n'
     return 0
@@ -208,16 +209,16 @@ release_count() {
 assert_no_install_transaction_artifacts() {
   for transaction_parent in \
     "$HOME/.local/bin" \
-    "$HOME/Library/Application Support/dsh-mac/libexec"; do
+    "$HOME/Library/Application Support/dsh-service/libexec"; do
     [ -d "$transaction_parent" ] || continue
-    for transaction_path in "$transaction_parent"/.dsh-mac-*; do
+    for transaction_path in "$transaction_parent"/.dsh-service-*; do
       [ ! -e "$transaction_path" ] && [ ! -L "$transaction_path" ] || {
         printf 'unexpected manager transaction artifact: %s\n' "$transaction_path" >&2
         return 1
       }
     done
   done
-  releases="$HOME/Library/Application Support/dsh-mac/releases"
+  releases="$HOME/Library/Application Support/dsh-service/releases"
   if [ -d "$releases" ]; then
     for staging_path in "$releases"/.staging-*; do
       [ ! -e "$staging_path" ] && [ ! -L "$staging_path" ] || {
@@ -229,7 +230,7 @@ assert_no_install_transaction_artifacts() {
 }
 
 make_status_release() {
-  manager_root="$HOME/Library/Application Support/dsh-mac"
+  manager_root="$HOME/Library/Application Support/dsh-service"
   release_id=1.2.3-1786640000-1234
   release_path="$manager_root/releases/$release_id"
   /bin/mkdir -p "$release_path" || return 1
@@ -246,7 +247,7 @@ make_status_release() {
 test_unknown_command_exits_64_with_usage() {
   run_cli definitely-unknown
   assert_eq 64 "$CLI_STATUS" || return 1
-  assert_contains "$CLI_OUTPUT" 'Usage: dsh-mac' || return 1
+  assert_contains "$CLI_OUTPUT" 'Usage: dsh-service' || return 1
   assert_contains "$CLI_OUTPUT" 'install'
 }
 
@@ -257,7 +258,7 @@ test_every_public_command_rejects_extra_arguments() {
       printf 'command with extra argument: %s\n' "$public_command" >&2
       return 1
     }
-    assert_contains "$CLI_OUTPUT" 'Usage: dsh-mac' || return 1
+    assert_contains "$CLI_OUTPUT" 'Usage: dsh-service' || return 1
   done
 }
 
@@ -266,7 +267,7 @@ test_help_and_version_are_read_only() {
 
   run_cli help
   assert_eq 0 "$CLI_STATUS" || return 1
-  assert_contains "$CLI_OUTPUT" 'Usage: dsh-mac' || return 1
+  assert_contains "$CLI_OUTPUT" 'Usage: dsh-service' || return 1
 
   run_cli version
   assert_eq 0 "$CLI_STATUS" || return 1
@@ -294,7 +295,7 @@ test_status_prints_all_public_fields() {
 test_status_reports_an_activation_journal_as_interrupted() {
   prepare_service_case status-interrupted || return 1
   make_status_release || return 1
-  activation="$HOME/Library/Application Support/dsh-mac/activation.env"
+  activation="$HOME/Library/Application Support/dsh-service/activation.env"
   printf 'interrupted transaction\n' >"$activation"
   before=$(<"$activation")
 
@@ -314,12 +315,12 @@ test_open_requires_verified_health_and_no_activation_journal() {
   assert_eq 'http://127.0.0.1:3080' "$(<"$DSH_TEST_OPEN_LOG")" || return 1
 
   : >"$DSH_TEST_OPEN_LOG"
-  printf 'journal\n' >"$HOME/Library/Application Support/dsh-mac/activation.env"
+  printf 'journal\n' >"$HOME/Library/Application Support/dsh-service/activation.env"
   run_cli open
   assert_eq 1 "$CLI_STATUS" || return 1
   assert_eq '' "$(<"$DSH_TEST_OPEN_LOG")" || return 1
 
-  /bin/rm -f "$HOME/Library/Application Support/dsh-mac/activation.env"
+  /bin/rm -f "$HOME/Library/Application Support/dsh-service/activation.env"
   printf '0\n' >"$DSH_TEST_HTTP_OK"
   run_cli open
   assert_eq 1 "$CLI_STATUS" || return 1
@@ -332,7 +333,7 @@ test_logs_execs_tail_F_for_only_the_two_owned_logs() {
   run_cli logs
 
   assert_eq 0 "$CLI_STATUS" || return 1
-  expected="-F|$HOME/Library/Logs/dsh-mac/stdout.log|$HOME/Library/Logs/dsh-mac/stderr.log"
+  expected="-F|$HOME/Library/Logs/dsh-service/stdout.log|$HOME/Library/Logs/dsh-service/stderr.log"
   assert_eq "$expected" "$(<"$DSH_TEST_TAIL_LOG")"
 }
 
@@ -344,9 +345,9 @@ printf "%s\n" "$$" >"$DSH_TEST_TAIL_PID"
 trap "exit 130" INT
 trap "exit 143" TERM
 while :; do /bin/sleep 1; done'
-  export DSH_MAC_TAIL_BIN="$TEST_ROOT/bin/blocking-tail"
+  export DSH_SERVICE_TAIL_BIN="$TEST_ROOT/bin/blocking-tail"
 
-  DSH_MAC_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" logs >/dev/null 2>&1 &
+  DSH_SERVICE_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" logs >/dev/null 2>&1 &
   cli_pid=$!
   attempts=0
   while [ "$attempts" -lt 50 ] && [ ! -s "$DSH_TEST_TAIL_PID" ]; do
@@ -386,16 +387,16 @@ test_install_atomically_publishes_executable_cli_and_runner() {
     printf '%s\n' "$CLI_OUTPUT" >&2
     return 1
   }
-  installed_cli="$HOME/.local/bin/dsh-mac"
-  installed_runner="$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run"
+  installed_cli="$HOME/.local/bin/dsh-service"
+  installed_runner="$HOME/Library/Application Support/dsh-service/libexec/dsh-service-run"
   [ -f "$installed_cli" ] && [ -x "$installed_cli" ] && [ ! -L "$installed_cli" ] || return 1
   [ -f "$installed_runner" ] && [ -x "$installed_runner" ] && [ ! -L "$installed_runner" ] || return 1
   /usr/bin/cmp -s "$CLI_PATH" "$installed_cli" || return 1
-  /usr/bin/cmp -s "$TESTS_DIR/../libexec/dsh-mac-run" "$installed_runner" || return 1
+  /usr/bin/cmp -s "$TESTS_DIR/../libexec/dsh-service-run" "$installed_runner" || return 1
   assert_eq 1 "$(release_count)" || return 1
   assert_eq loaded "$(<"$DSH_TEST_LOADED")" || return 1
   assert_eq 'http://127.0.0.1:3080' "$(<"$DSH_TEST_OPEN_LOG")" || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac/.lock" ]
+  [ ! -e "$HOME/Library/Application Support/dsh-service/.lock" ]
 }
 
 test_failed_first_install_removes_new_manager_files_and_empty_root() {
@@ -405,15 +406,15 @@ test_failed_first_install_removes_new_manager_files_and_empty_root() {
   run_cli install
 
   assert_eq 1 "$CLI_STATUS" || return 1
-  [ ! -e "$HOME/.local/bin/dsh-mac" ] || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run" ] || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac" ]
+  [ ! -e "$HOME/.local/bin/dsh-service" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-service/libexec/dsh-service-run" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-service" ]
 }
 
 test_failed_install_restores_both_older_manager_files() {
   prepare_install_case install-restore || return 1
-  installed_cli="$HOME/.local/bin/dsh-mac"
-  installed_runner="$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run"
+  installed_cli="$HOME/.local/bin/dsh-service"
+  installed_runner="$HOME/Library/Application Support/dsh-service/libexec/dsh-service-run"
   /bin/mkdir -p "${installed_cli%/*}" "${installed_runner%/*}" || return 1
   printf 'older cli\n' >"$installed_cli" || return 1
   printf 'older runner\n' >"$installed_runner" || return 1
@@ -426,9 +427,9 @@ test_failed_install_restores_both_older_manager_files() {
   assert_eq 'older cli' "$(<"$installed_cli")" || return 1
   assert_eq 'older runner' "$(<"$installed_runner")" || return 1
   [ -x "$installed_cli" ] && [ -x "$installed_runner" ] || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac/releases" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-service/releases" ] || return 1
   assert_no_install_transaction_artifacts || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac/.lock" ]
+  [ ! -e "$HOME/Library/Application Support/dsh-service/.lock" ]
 }
 
 test_true_npm_install_failure_removes_every_new_empty_install_directory() {
@@ -446,8 +447,8 @@ test_true_npm_install_failure_removes_every_new_empty_install_directory() {
 
 test_term_during_stage_restores_both_older_manager_files_and_lock() {
   prepare_install_case install-term-restore || return 1
-  installed_cli="$HOME/.local/bin/dsh-mac"
-  installed_runner="$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run"
+  installed_cli="$HOME/.local/bin/dsh-service"
+  installed_runner="$HOME/Library/Application Support/dsh-service/libexec/dsh-service-run"
   /bin/mkdir -p "${installed_cli%/*}" "${installed_runner%/*}" || return 1
   printf 'older cli before TERM\n' >"$installed_cli" || return 1
   printf 'older runner before TERM\n' >"$installed_runner" || return 1
@@ -463,8 +464,8 @@ test_term_during_stage_restores_both_older_manager_files_and_lock() {
   assert_eq 'older runner before TERM' "$(<"$installed_runner")" || return 1
   assert_eq "$cli_identity" "$(/usr/bin/stat -f '%i:%Lp' "$installed_cli")" || return 1
   assert_eq "$runner_identity" "$(/usr/bin/stat -f '%i:%Lp' "$installed_runner")" || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac/.lock" ] || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac/releases" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-service/.lock" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-service/releases" ] || return 1
   assert_no_install_transaction_artifacts
 }
 
@@ -482,7 +483,7 @@ test_term_during_first_install_removes_manager_files_and_new_directories() {
 
 test_cli_destination_directory_is_rejected_before_external_preflight() {
   prepare_install_case install-cli-directory || return 1
-  cli_destination="$HOME/.local/bin/dsh-mac"
+  cli_destination="$HOME/.local/bin/dsh-service"
   /bin/mkdir -p "$cli_destination" || return 1
   printf 'cli directory marker\n' >"$cli_destination/marker" || return 1
   before=$(home_inventory) || return 1
@@ -502,7 +503,7 @@ test_cli_destination_directory_is_rejected_before_external_preflight() {
 
 test_runner_destination_directory_is_rejected_before_external_preflight() {
   prepare_install_case install-runner-directory || return 1
-  runner_destination="$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run"
+  runner_destination="$HOME/Library/Application Support/dsh-service/libexec/dsh-service-run"
   /bin/mkdir -p "$runner_destination" || return 1
   printf 'runner directory marker\n' >"$runner_destination/marker" || return 1
   before=$(home_inventory) || return 1
@@ -522,8 +523,8 @@ test_runner_destination_directory_is_rejected_before_external_preflight() {
 
 test_manager_staging_failure_preserves_both_older_files() {
   prepare_install_case install-stage-restore || return 1
-  installed_cli="$HOME/.local/bin/dsh-mac"
-  installed_runner="$HOME/Library/Application Support/dsh-mac/libexec/dsh-mac-run"
+  installed_cli="$HOME/.local/bin/dsh-service"
+  installed_runner="$HOME/Library/Application Support/dsh-service/libexec/dsh-service-run"
   /bin/mkdir -p "${installed_cli%/*}" "${installed_runner%/*}" || return 1
   printf 'older cli before staging\n' >"$installed_cli" || return 1
   printf 'older runner before staging\n' >"$installed_runner" || return 1
@@ -547,13 +548,13 @@ test_repeated_installed_install_reuses_release_and_preserves_pid() {
   prepare_install_case install-repeat || return 1
   run_cli install
   assert_eq 0 "$CLI_STATUS" || return 1
-  installed_cli="$HOME/.local/bin/dsh-mac"
+  installed_cli="$HOME/.local/bin/dsh-service"
   first_pid=$(<"$DSH_TEST_PID")
   first_count=$(release_count)
   first_identity=$(/usr/bin/stat -f '%i:%m' "$installed_cli") || return 1
   : >"$DSH_TEST_OPEN_LOG"
 
-  CLI_OUTPUT=$(DSH_MAC_SOURCE_ONLY=0 /bin/bash "$installed_cli" install 2>&1)
+  CLI_OUTPUT=$(DSH_SERVICE_SOURCE_ONLY=0 /bin/bash "$installed_cli" install 2>&1)
   CLI_STATUS=$?
 
   assert_eq 0 "$CLI_STATUS" || {
@@ -575,17 +576,17 @@ test_install_prints_path_hint_without_editing_profiles() {
   assert_eq 0 "$CLI_STATUS" || return 1
   assert_contains "$CLI_OUTPUT" 'export PATH=' || return 1
   assert_contains "$CLI_OUTPUT" "$HOME/.local/bin" || return 1
-  assert_contains "$CLI_OUTPUT" "$HOME/.local/bin/dsh-mac" || return 1
+  assert_contains "$CLI_OUTPUT" "$HOME/.local/bin/dsh-service" || return 1
   [ ! -e "$HOME/.zshrc" ] && [ ! -e "$HOME/.bash_profile" ]
 }
 
 prepare_uninstall_case() {
   case_name=$1
   prepare_service_case "$case_name" || return 1
-  manager_root="$HOME/Library/Application Support/dsh-mac"
-  cli_dest="$HOME/.local/bin/dsh-mac"
-  plist_path="$HOME/Library/LaunchAgents/dev.dsh-mac.web.plist"
-  log_dir="$HOME/Library/Logs/dsh-mac"
+  manager_root="$HOME/Library/Application Support/dsh-service"
+  cli_dest="$HOME/.local/bin/dsh-service"
+  plist_path="$HOME/Library/LaunchAgents/dev.dsh-service.web.plist"
+  log_dir="$HOME/Library/Logs/dsh-service"
   /bin/mkdir -p "$manager_root" "${cli_dest%/*}" "${plist_path%/*}" "$log_dir" "$HOME/.dsh" || return 1
   printf 'malformed journal proves recovery was skipped\n' >"$manager_root/activation.env" || return 1
   printf 'installed command\n' >"$cli_dest" || return 1
@@ -610,13 +611,13 @@ test_uninstall_skips_recovery_and_removes_only_exact_owned_paths() {
     return 1
   }
   uid=$(/usr/bin/id -u)
-  assert_line "$(<"$DSH_TEST_COMMAND_LOG")" "bootout|gui/$uid/dev.dsh-mac.web" || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac" ] || return 1
-  [ ! -e "$HOME/Library/LaunchAgents/dev.dsh-mac.web.plist" ] || return 1
-  [ ! -e "$HOME/Library/Logs/dsh-mac/stdout.log" ] || return 1
-  [ ! -e "$HOME/Library/Logs/dsh-mac/stderr.log" ] || return 1
-  [ ! -e "$HOME/.local/bin/dsh-mac" ] || return 1
-  assert_eq 'preserve log sibling' "$(<"$HOME/Library/Logs/dsh-mac/preserve.log")" || return 1
+  assert_line "$(<"$DSH_TEST_COMMAND_LOG")" "bootout|gui/$uid/dev.dsh-service.web" || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-service" ] || return 1
+  [ ! -e "$HOME/Library/LaunchAgents/dev.dsh-service.web.plist" ] || return 1
+  [ ! -e "$HOME/Library/Logs/dsh-service/stdout.log" ] || return 1
+  [ ! -e "$HOME/Library/Logs/dsh-service/stderr.log" ] || return 1
+  [ ! -e "$HOME/.local/bin/dsh-service" ] || return 1
+  assert_eq 'preserve log sibling' "$(<"$HOME/Library/Logs/dsh-service/preserve.log")" || return 1
   assert_eq 'preserve plist sibling' "$(<"$HOME/Library/LaunchAgents/other.plist")" || return 1
   assert_eq 'preserve cli sibling' "$(<"$HOME/.local/bin/other-command")" || return 1
   assert_eq 'private marker' "$(<"$HOME/.dsh/marker")"
@@ -632,19 +633,19 @@ test_uninstall_is_repeatable() {
 
   assert_eq 0 "$CLI_STATUS" || return 1
   assert_eq 'private marker' "$(<"$HOME/.dsh/marker")" || return 1
-  [ ! -e "$HOME/Library/Application Support/dsh-mac" ] || return 1
+  [ ! -e "$HOME/Library/Application Support/dsh-service" ] || return 1
   case "$(<"$DSH_TEST_COMMAND_LOG")" in
     *bootout*) return 1 ;;
   esac
 }
 
 home_fingerprint() {
-  (CDPATH= cd -P -- "$HOME" && /usr/bin/tar -cf - . 2>/dev/null | /usr/bin/cksum)
+  (CDPATH='' cd -P -- "$HOME" && /usr/bin/tar -cf - . 2>/dev/null | /usr/bin/cksum)
 }
 
 start_real_lock_holder() {
   ready_file=$1
-  DSH_MAC_SOURCE_ONLY=1 /bin/bash -c '
+  DSH_SERVICE_SOURCE_ONLY=1 /bin/bash -c '
     . "$1" || exit 1
     init_paths
     acquire_lock || exit 1
@@ -674,12 +675,12 @@ test_all_mutating_public_commands_reject_a_live_real_lock_without_mutation() {
   for locked_command in install start stop restart update uninstall; do
     prepare_install_case "locked-$locked_command" || return 1
     export DSH_TEST_MUTATION_ONLY_LOG=1
-    manager_root="$HOME/Library/Application Support/dsh-mac"
-    /bin/mkdir -p "$manager_root" "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/dsh-mac" || return 1
+    manager_root="$HOME/Library/Application Support/dsh-service"
+    /bin/mkdir -p "$manager_root" "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/dsh-service" || return 1
     printf 'manager sentinel\n' >"$manager_root/sentinel" || return 1
-    printf 'cli sentinel\n' >"$HOME/.local/bin/dsh-mac" || return 1
-    printf 'plist sentinel\n' >"$HOME/Library/LaunchAgents/dev.dsh-mac.web.plist" || return 1
-    printf 'log sentinel\n' >"$HOME/Library/Logs/dsh-mac/stdout.log" || return 1
+    printf 'cli sentinel\n' >"$HOME/.local/bin/dsh-service" || return 1
+    printf 'plist sentinel\n' >"$HOME/Library/LaunchAgents/dev.dsh-service.web.plist" || return 1
+    printf 'log sentinel\n' >"$HOME/Library/Logs/dsh-service/stdout.log" || return 1
     ready="$TEST_ROOT/locked-$locked_command-ready"
     start_real_lock_holder "$ready" || return 1
     before_home=$(home_fingerprint) || return 1
@@ -694,7 +695,7 @@ test_all_mutating_public_commands_reject_a_live_real_lock_without_mutation() {
       stop_real_lock_holder || :
       return 1
     }
-    assert_contains "$CLI_OUTPUT" 'another dsh-mac operation is running' || {
+    assert_contains "$CLI_OUTPUT" 'another dsh-service operation is running' || {
       stop_real_lock_holder || :
       return 1
     }

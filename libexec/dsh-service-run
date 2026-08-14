@@ -2,7 +2,7 @@
 set -u
 
 runner_die() {
-  printf 'dsh-mac: %s\n' "$*" >&2
+  printf 'dsh-service: %s\n' "$*" >&2
   exit 1
 }
 
@@ -11,12 +11,12 @@ if [ "$#" -eq 0 ]; then
 elif [ "$#" -eq 1 ] && [ "$1" = --check ]; then
   RUN_MODE=check
 else
-  printf 'dsh-mac: usage: run [--check]\n' >&2
+  printf 'dsh-service: usage: run [--check]\n' >&2
   exit 64
 fi
 
 RUN_PATH="$0"
-RUN_DIR="$(CDPATH= cd -P -- "$(dirname -- "$RUN_PATH")" && pwd)" || exit 1
+RUN_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$RUN_PATH")" && pwd)" || exit 1
 MANIFEST_PATH="$RUN_DIR/manifest.env"
 [ -r "$MANIFEST_PATH" ] || runner_die 'cannot read release manifest'
 
@@ -89,7 +89,7 @@ esac
 
 CLI_PATH="$RUN_DIR/$manifest_cli_relative"
 [ -f "$CLI_PATH" ] && [ ! -L "$CLI_PATH" ] || runner_die 'release CLI is unavailable'
-CLI_PARENT="$(CDPATH= cd -P -- "$(dirname -- "$CLI_PATH")" && pwd)" || runner_die 'release CLI parent is unavailable'
+CLI_PARENT="$(CDPATH='' cd -P -- "$(dirname -- "$CLI_PATH")" && pwd)" || runner_die 'release CLI parent is unavailable'
 case "$CLI_PARENT/" in
   "$RUN_DIR/"*) ;;
   *) runner_die 'release CLI escapes release directory' ;;
@@ -101,7 +101,7 @@ if [ "$RUN_MODE" = check ]; then
   exit 0
 fi
 [ -f "$RUN_DIR/.complete" ] && [ ! -L "$RUN_DIR/.complete" ] || {
-  printf 'dsh-mac: incomplete release\n' >&2
+  printf 'dsh-service: incomplete release\n' >&2
   exit 1
 }
 exec "$manifest_node_bin" "$CLI_PATH" web \

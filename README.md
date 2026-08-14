@@ -1,6 +1,6 @@
-# Unofficial macOS service manager for DeepSeek Harness
+# DSH Service
 
-`dsh-mac` installs DeepSeek Harness (DSH) as a per-user macOS LaunchAgent on `http://127.0.0.1:3080`. It manages start, stop, update, logs, and removal without a global npm install.
+DSH Service is an unofficial service manager for DeepSeek Harness (DSH). Its current backend runs DSH as a per-user macOS LaunchAgent at `http://127.0.0.1:3080`. Linux and Windows support is planned, not available.
 
 ## Meet the requirements
 
@@ -24,7 +24,7 @@ Run the installer from a trusted checkout:
 The installer fetches the current `@deepseek-ai/dsh` release, starts the service, and opens the local interface. If `~/.local/bin` is not on `PATH`, call the installed command by its absolute path:
 
 ```bash
-"$HOME/.local/bin/dsh-mac" status
+"$HOME/.local/bin/dsh-service" status
 ```
 
 ## Manage the service
@@ -33,19 +33,19 @@ The command controls one per-user service at the fixed address `http://127.0.0.1
 
 | Command | Action |
 | --- | --- |
-| `dsh-mac install` | Install or refresh the manager, install the latest DSH release, start it, and open the interface |
-| `dsh-mac start` | Load and start the service |
-| `dsh-mac stop` | Unload the service for the current login session |
-| `dsh-mac restart` | Restart the service and wait for a healthy replacement process |
-| `dsh-mac status` | Print manager version, DSH version, LaunchAgent state, process ID, URL, and health |
-| `dsh-mac open` | Open the interface only after the service passes its health check |
-| `dsh-mac logs` | Follow both service log files until you press `Control-C` |
-| `dsh-mac update` | Install and activate the latest DSH release |
-| `dsh-mac uninstall` | Remove the manager and service while preserving `~/.dsh` |
-| `dsh-mac version` | Print the manager version |
-| `dsh-mac help` | Print command help |
+| `dsh-service install` | Install or refresh the manager, install the latest DSH release, start it, and open the interface |
+| `dsh-service start` | Load and start the service |
+| `dsh-service stop` | Unload the service for the current login session |
+| `dsh-service restart` | Restart the service and wait for a healthy replacement process |
+| `dsh-service status` | Print manager version, DSH version, LaunchAgent state, process ID, URL, and health |
+| `dsh-service open` | Open the interface only after the service passes its health check |
+| `dsh-service logs` | Follow both service log files until you press `Control-C` |
+| `dsh-service update` | Install and activate the latest DSH release |
+| `dsh-service uninstall` | Remove the manager and service while preserving `~/.dsh` |
+| `dsh-service version` | Print the manager version |
+| `dsh-service help` | Print command help |
 
-The LaunchAgent starts at login and uses `KeepAlive` to restart DSH after an unexpected exit. `dsh-mac stop` intentionally unloads the job but leaves its plist in place. Run `dsh-mac start` to restore it now, or macOS will load it at your next login. Run `dsh-mac uninstall` to remove login autostart.
+The LaunchAgent starts at login and uses `KeepAlive` to restart DSH after an unexpected exit. `dsh-service stop` intentionally unloads the job but leaves its plist in place. Run `dsh-service start` to restore it now, or macOS will load it at your next login. Run `dsh-service uninstall` to remove login autostart.
 
 ## Understand the managed runtime
 
@@ -57,11 +57,11 @@ By contrast, this command runs DSH in the foreground and attaches it to your ter
 npx @deepseek-ai/dsh@latest web --host 127.0.0.1 --port 3080
 ```
 
-The foreground command has no login autostart, manager status, or managed rollback. Do not run it while `dsh-mac` owns port `3080`.
+The foreground command has no login autostart, manager status, or managed rollback. Do not run it while `dsh-service` owns port `3080`.
 
 ## Update DSH and the manager
 
-`dsh-mac update` updates DSH only. It first resolves the npm `latest` version. If the current release validates at that version, the manager checks service health. A healthy match needs no installation or restart, so its process ID remains unchanged.
+`dsh-service update` updates DSH only. It first resolves the npm `latest` version. If the current release validates at that version, the manager checks service health. A healthy match needs no installation or restart, so its process ID remains unchanged.
 
 If that release is stopped or unhealthy, the manager starts or restarts it as needed, then waits for health. A foreign listener on port `3080` blocks recovery. With a valid current release, only a different DSH version takes the activation path.
 
@@ -84,42 +84,42 @@ The manager owns these paths under your home directory. In the table, `release_i
 
 | Purpose | Path |
 | --- | --- |
-| Command | `~/.local/bin/dsh-mac` |
-| Manager root | `~/Library/Application Support/dsh-mac` |
-| Runner template | `~/Library/Application Support/dsh-mac/libexec/dsh-mac-run` |
-| Versioned releases | `~/Library/Application Support/dsh-mac/releases` |
-| Release directory | `~/Library/Application Support/dsh-mac/releases/release_id` |
-| Release package tree | `~/Library/Application Support/dsh-mac/releases/release_id/node_modules/` |
-| Release manifest | `~/Library/Application Support/dsh-mac/releases/release_id/manifest.env` |
-| Release runner | `~/Library/Application Support/dsh-mac/releases/release_id/run` |
-| Release completion marker | `~/Library/Application Support/dsh-mac/releases/release_id/.complete` |
-| Active release link | `~/Library/Application Support/dsh-mac/current` |
-| Previous release link | `~/Library/Application Support/dsh-mac/previous` |
-| Activation journal | `~/Library/Application Support/dsh-mac/activation.env` |
-| Operation lock | `~/Library/Application Support/dsh-mac/.lock` |
-| Service workspace | `~/Library/Application Support/dsh-mac/workspace` |
-| LaunchAgent plist | `~/Library/LaunchAgents/dev.dsh-mac.web.plist` |
-| Log directory | `~/Library/Logs/dsh-mac` |
-| Standard output | `~/Library/Logs/dsh-mac/stdout.log` |
-| Standard error | `~/Library/Logs/dsh-mac/stderr.log` |
+| Command | `~/.local/bin/dsh-service` |
+| Manager root | `~/Library/Application Support/dsh-service` |
+| Runner template | `~/Library/Application Support/dsh-service/libexec/dsh-service-run` |
+| Versioned releases | `~/Library/Application Support/dsh-service/releases` |
+| Release directory | `~/Library/Application Support/dsh-service/releases/release_id` |
+| Release package tree | `~/Library/Application Support/dsh-service/releases/release_id/node_modules/` |
+| Release manifest | `~/Library/Application Support/dsh-service/releases/release_id/manifest.env` |
+| Release runner | `~/Library/Application Support/dsh-service/releases/release_id/run` |
+| Release completion marker | `~/Library/Application Support/dsh-service/releases/release_id/.complete` |
+| Active release link | `~/Library/Application Support/dsh-service/current` |
+| Previous release link | `~/Library/Application Support/dsh-service/previous` |
+| Activation journal | `~/Library/Application Support/dsh-service/activation.env` |
+| Operation lock | `~/Library/Application Support/dsh-service/.lock` |
+| Service workspace | `~/Library/Application Support/dsh-service/workspace` |
+| LaunchAgent plist | `~/Library/LaunchAgents/dev.dsh-service.web.plist` |
+| Log directory | `~/Library/Logs/dsh-service` |
+| Standard output | `~/Library/Logs/dsh-service/stdout.log` |
+| Standard error | `~/Library/Logs/dsh-service/stderr.log` |
 
-DSH owns its user state in `~/.dsh`; the manager does not. `dsh-mac uninstall` preserves that directory and all of its contents.
+DSH owns its user state in `~/.dsh`; the manager does not. `dsh-service uninstall` preserves that directory and all of its contents.
 
 ## Troubleshoot the service
 
 Start with the status command. It exits with a nonzero status unless the service reports `healthy`:
 
 ```bash
-dsh-mac status
+dsh-service status
 ```
 
 Use the logs to inspect startup and runtime errors:
 
 ```bash
-dsh-mac logs
+dsh-service logs
 ```
 
-If status reports `unloaded`, run `dsh-mac start`. If it reports `unhealthy` or `starting`, inspect both logs before restarting. If it reports `interrupted`, rerun `dsh-mac restart` so the manager can recover the recorded activation. If it reports `conflict`, inspect port `3080` before any service change.
+If status reports `unloaded`, run `dsh-service start`. If it reports `unhealthy` or `starting`, inspect both logs before restarting. If it reports `interrupted`, rerun `dsh-service restart` so the manager can recover the recorded activation. If it reports `conflict`, inspect port `3080` before any service change.
 
 The manager refuses to start or restart when another process owns port `3080`. Identify the listener without stopping it:
 
@@ -150,8 +150,8 @@ Automated Bash syntax checks and isolated tests ran on macOS 26.5.2 (build 25F84
 Contributors can run the CI checks plus a whitespace check:
 
 ```bash
-/bin/bash -n bin/dsh-mac libexec/dsh-mac-run install.sh tests/*.sh
-shellcheck -s bash bin/dsh-mac libexec/dsh-mac-run install.sh tests/*.sh
+/bin/bash -n bin/dsh-service libexec/dsh-service-run install.sh tests/*.sh
+shellcheck -s bash bin/dsh-service libexec/dsh-service-run install.sh tests/*.sh
 /bin/bash tests/run.sh
 git diff --check
 ```

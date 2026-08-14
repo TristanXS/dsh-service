@@ -1,12 +1,13 @@
 #!/bin/bash
+# shellcheck disable=SC1090,SC1091,SC2016,SC2030,SC2031,SC2034,SC2329
 set -u
 
-TESTS_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-CLI_PATH="$TESTS_DIR/../bin/dsh-mac"
+TESTS_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
-export DSH_MAC_SOURCE_ONLY=1
+export DSH_SERVICE_SOURCE_ONLY=1
 if ! . "$CLI_PATH"; then
   printf 'could not source CLI: %s\n' "$CLI_PATH" >&2
   exit 1
@@ -253,13 +254,13 @@ prepare_launchd_case() {
   export DSH_TEST_GRACEFUL_MODE=success
 
   write_launchd_fakes
-  export DSH_MAC_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
-  export DSH_MAC_PLUTIL_BIN=/usr/bin/plutil
-  export DSH_MAC_LSOF_BIN="$TEST_ROOT/bin/lsof"
-  export DSH_MAC_CURL_BIN="$TEST_ROOT/bin/curl"
-  export DSH_MAC_OPEN_BIN="$TEST_ROOT/bin/open"
-  export DSH_MAC_WAIT_ATTEMPTS=6
-  export DSH_MAC_WAIT_INTERVAL=0
+  export DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
+  export DSH_SERVICE_PLUTIL_BIN=/usr/bin/plutil
+  export DSH_SERVICE_LSOF_BIN="$TEST_ROOT/bin/lsof"
+  export DSH_SERVICE_CURL_BIN="$TEST_ROOT/bin/curl"
+  export DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/open"
+  export DSH_SERVICE_WAIT_ATTEMPTS=6
+  export DSH_SERVICE_WAIT_INTERVAL=0
   init_command_paths
 }
 
@@ -344,7 +345,7 @@ test_plist_is_valid_and_preserves_special_paths() (
 
   ensure_plist || return 1
   /usr/bin/plutil -lint "$PLIST_PATH" >/dev/null || return 1
-  assert_eq dev.dsh-mac.web "$(plist_raw Label)" || return 1
+  assert_eq dev.dsh-service.web "$(plist_raw Label)" || return 1
   assert_eq 2 "$(plist_raw ProgramArguments)" || return 1
   assert_eq /bin/bash "$(plist_raw ProgramArguments.0)" || return 1
   assert_eq "$CURRENT_LINK/run" "$(plist_raw ProgramArguments.1)" || return 1
@@ -380,7 +381,7 @@ exit 1'
   ! ensure_plist || return 1
   assert_eq "$original_plist" "$(<"$PLIST_PATH")" || return 1
   [ -s "$DSH_TEST_PLUTIL_LOG" ] || return 1
-  for temporary_plist in "$(dirname -- "$PLIST_PATH")"/.dev.dsh-mac.web.plist.*; do
+  for temporary_plist in "$(dirname -- "$PLIST_PATH")"/.dev.dsh-service.web.plist.*; do
     [ ! -e "$temporary_plist" ] || return 1
   done
 )
@@ -540,7 +541,7 @@ test_restart_falls_back_once_to_bootout_and_bootstrap() (
   set_listeners '101|127.0.0.1:3080' || return 1
   export DSH_TEST_GRACEFUL_MODE=stuck
   export DSH_TEST_NEXT_PID=206
-  export DSH_MAC_WAIT_ATTEMPTS=2
+  export DSH_SERVICE_WAIT_ATTEMPTS=2
   init_command_paths
 
   restart_service || return 1
@@ -559,7 +560,7 @@ test_stop_waits_for_job_and_old_listener_to_disappear() (
   set_listeners '101|127.0.0.1:3080' || return 1
   export DSH_TEST_BOOTOUT_JOB_DELAY=2
   export DSH_TEST_BOOTOUT_LISTENER_DELAY=3
-  export DSH_MAC_WAIT_ATTEMPTS=8
+  export DSH_SERVICE_WAIT_ATTEMPTS=8
   init_command_paths
   shell_kill_log="$TEST_ROOT/stop-shell-kill.log"
   : >"$shell_kill_log"
@@ -585,7 +586,7 @@ test_stop_does_not_treat_lsof_error_as_old_listener_release() (
   set_job 1 101
   set_listeners '101|127.0.0.1:3080' || return 1
   export DSH_TEST_BOOTOUT_LISTENER_DELAY=99
-  export DSH_MAC_WAIT_ATTEMPTS=2
+  export DSH_SERVICE_WAIT_ATTEMPTS=2
   init_command_paths
   set_lsof_failure 2 ''
 

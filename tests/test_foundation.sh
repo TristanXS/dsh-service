@@ -1,12 +1,13 @@
 #!/bin/bash
+# shellcheck disable=SC1090,SC1091,SC2016,SC2034,SC2181,SC2329
 set -u
 
-TESTS_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-CLI_PATH="$TESTS_DIR/../bin/dsh-mac"
+TESTS_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
-export DSH_MAC_SOURCE_ONLY=1
+export DSH_SERVICE_SOURCE_ONLY=1
 if ! . "$CLI_PATH"; then
   printf 'could not source CLI: %s\n' "$CLI_PATH" >&2
   exit 1
@@ -16,60 +17,60 @@ test_die_reports_failure() {
   actual=$(die 'broken operation' 2>&1)
   status=$?
   assert_eq 1 "$status" || return 1
-  assert_eq 'dsh-mac: error: broken operation' "$actual"
+  assert_eq 'dsh-service: error: broken operation' "$actual"
 }
 
 test_note_reports_progress() {
   actual=$(note 'working' 2>&1)
   status=$?
   assert_eq 0 "$status" || return 1
-  assert_eq 'dsh-mac: working' "$actual"
+  assert_eq 'dsh-service: working' "$actual"
 }
 
 test_init_paths_uses_home() {
   init_paths
   uid=$(/usr/bin/id -u)
-  assert_eq "$HOME/Library/Application Support/dsh-mac" "$DSH_MAC_ROOT" || return 1
-  assert_eq "$DSH_MAC_ROOT/releases" "$RELEASES_DIR" || return 1
-  assert_eq "$DSH_MAC_ROOT/current" "$CURRENT_LINK" || return 1
-  assert_eq "$DSH_MAC_ROOT/previous" "$PREVIOUS_LINK" || return 1
-  assert_eq "$DSH_MAC_ROOT/activation.env" "$ACTIVATION_FILE" || return 1
-  assert_eq "$DSH_MAC_ROOT/.lock" "$LOCK_DIR" || return 1
-  assert_eq "$DSH_MAC_ROOT/workspace" "$WORKSPACE_DIR" || return 1
-  assert_eq "$HOME/.local/bin/dsh-mac" "$CLI_DEST" || return 1
-  assert_eq "$HOME/Library/LaunchAgents/dev.dsh-mac.web.plist" "$PLIST_PATH" || return 1
-  assert_eq "$HOME/Library/Logs/dsh-mac" "$LOG_DIR" || return 1
-  assert_eq "gui/$uid/dev.dsh-mac.web" "$SERVICE_TARGET"
+  assert_eq "$HOME/Library/Application Support/dsh-service" "$DSH_SERVICE_ROOT" || return 1
+  assert_eq "$DSH_SERVICE_ROOT/releases" "$RELEASES_DIR" || return 1
+  assert_eq "$DSH_SERVICE_ROOT/current" "$CURRENT_LINK" || return 1
+  assert_eq "$DSH_SERVICE_ROOT/previous" "$PREVIOUS_LINK" || return 1
+  assert_eq "$DSH_SERVICE_ROOT/activation.env" "$ACTIVATION_FILE" || return 1
+  assert_eq "$DSH_SERVICE_ROOT/.lock" "$LOCK_DIR" || return 1
+  assert_eq "$DSH_SERVICE_ROOT/workspace" "$WORKSPACE_DIR" || return 1
+  assert_eq "$HOME/.local/bin/dsh-service" "$CLI_DEST" || return 1
+  assert_eq "$HOME/Library/LaunchAgents/dev.dsh-service.web.plist" "$PLIST_PATH" || return 1
+  assert_eq "$HOME/Library/Logs/dsh-service" "$LOG_DIR" || return 1
+  assert_eq "gui/$uid/dev.dsh-service.web" "$SERVICE_TARGET"
 }
 
 test_command_overrides_are_honored_in_tests() (
-  DSH_MAC_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl-override"
-  DSH_MAC_PLUTIL_BIN="$TEST_ROOT/bin/plutil-override"
-  DSH_MAC_LSOF_BIN="$TEST_ROOT/bin/lsof-override"
-  DSH_MAC_CURL_BIN="$TEST_ROOT/bin/curl-override"
-  DSH_MAC_OPEN_BIN="$TEST_ROOT/bin/open-override"
-  DSH_MAC_TAIL_BIN="$TEST_ROOT/bin/tail-override"
-  DSH_MAC_WAIT_ATTEMPTS=7
-  DSH_MAC_WAIT_INTERVAL=2
-  DSH_MAC_WAIT_TIMEOUT_SECONDS=9
+  DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl-override"
+  DSH_SERVICE_PLUTIL_BIN="$TEST_ROOT/bin/plutil-override"
+  DSH_SERVICE_LSOF_BIN="$TEST_ROOT/bin/lsof-override"
+  DSH_SERVICE_CURL_BIN="$TEST_ROOT/bin/curl-override"
+  DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/open-override"
+  DSH_SERVICE_TAIL_BIN="$TEST_ROOT/bin/tail-override"
+  DSH_SERVICE_WAIT_ATTEMPTS=7
+  DSH_SERVICE_WAIT_INTERVAL=2
+  DSH_SERVICE_WAIT_TIMEOUT_SECONDS=9
   init_command_paths
-  assert_eq "$DSH_MAC_LAUNCHCTL_BIN" "$LAUNCHCTL_BIN" || return 1
-  assert_eq "$DSH_MAC_PLUTIL_BIN" "$PLUTIL_BIN" || return 1
-  assert_eq "$DSH_MAC_LSOF_BIN" "$LSOF_BIN" || return 1
-  assert_eq "$DSH_MAC_CURL_BIN" "$CURL_BIN" || return 1
-  assert_eq "$DSH_MAC_OPEN_BIN" "$OPEN_BIN" || return 1
-  assert_eq "$DSH_MAC_TAIL_BIN" "$TAIL_BIN" || return 1
+  assert_eq "$DSH_SERVICE_LAUNCHCTL_BIN" "$LAUNCHCTL_BIN" || return 1
+  assert_eq "$DSH_SERVICE_PLUTIL_BIN" "$PLUTIL_BIN" || return 1
+  assert_eq "$DSH_SERVICE_LSOF_BIN" "$LSOF_BIN" || return 1
+  assert_eq "$DSH_SERVICE_CURL_BIN" "$CURL_BIN" || return 1
+  assert_eq "$DSH_SERVICE_OPEN_BIN" "$OPEN_BIN" || return 1
+  assert_eq "$DSH_SERVICE_TAIL_BIN" "$TAIL_BIN" || return 1
   assert_eq 7 "$WAIT_ATTEMPTS" || return 1
   assert_eq 2 "$WAIT_INTERVAL" || return 1
   assert_eq 9 "$WAIT_TIMEOUT_SECONDS"
 )
 
 test_command_overrides_are_ignored_in_production() (
-  DSH_MAC_TESTING=0
-  DSH_MAC_LAUNCHCTL_BIN="$TEST_ROOT/bin/not-launchctl"
-  DSH_MAC_WAIT_ATTEMPTS=99
-  DSH_MAC_WAIT_INTERVAL=99
-  DSH_MAC_WAIT_TIMEOUT_SECONDS=99
+  DSH_SERVICE_TESTING=0
+  DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/not-launchctl"
+  DSH_SERVICE_WAIT_ATTEMPTS=99
+  DSH_SERVICE_WAIT_INTERVAL=99
+  DSH_SERVICE_WAIT_TIMEOUT_SECONDS=99
   init_command_paths
   assert_eq /bin/launchctl "$LAUNCHCTL_BIN" || return 1
   assert_eq /usr/bin/plutil "$PLUTIL_BIN" || return 1
@@ -140,7 +141,7 @@ prepare_manifest() {
   write_fake manifest-node 'exit 0'
   MANIFEST_PATH="$TEST_ROOT/manifest.env"
   MANIFEST_NODE_PATH="$TEST_ROOT/bin/manifest-node"
-  write_manifest "$MANIFEST_PATH" "$MANIFEST_NODE_PATH" '0.1.0' 'bin/dsh-mac' '1786640000'
+  write_manifest "$MANIFEST_PATH" "$MANIFEST_NODE_PATH" '0.1.0' 'bin/dsh-service' '1786640000'
 }
 
 test_manifest_reads_valid_values() {
@@ -149,7 +150,7 @@ test_manifest_reads_valid_values() {
   assert_eq 1 "$MANIFEST_SCHEMA_VERSION" || return 1
   assert_eq '0.1.0' "$MANIFEST_DSH_VERSION" || return 1
   assert_eq "$MANIFEST_NODE_PATH" "$MANIFEST_NODE_BIN" || return 1
-  assert_eq 'bin/dsh-mac' "$MANIFEST_CLI_RELATIVE" || return 1
+  assert_eq 'bin/dsh-service' "$MANIFEST_CLI_RELATIVE" || return 1
   assert_eq '1786640000' "$MANIFEST_INSTALLED_AT"
 }
 
@@ -171,14 +172,14 @@ test_manifest_rejects_missing_keys() {
     printf 'SCHEMA_VERSION=1\n'
     printf 'DSH_VERSION=0.1.0\n'
     printf 'NODE_BIN=%s\n' "$MANIFEST_NODE_PATH"
-    printf 'CLI_RELATIVE=bin/dsh-mac\n'
+    printf 'CLI_RELATIVE=bin/dsh-service\n'
   } >"$MANIFEST_PATH"
   ! read_manifest "$MANIFEST_PATH"
 }
 
 test_manifest_rejects_relative_node_bin() {
   prepare_manifest
-  write_manifest "$MANIFEST_PATH" 'relative/node' '0.1.0' 'bin/dsh-mac' '1786640000'
+  write_manifest "$MANIFEST_PATH" 'relative/node' '0.1.0' 'bin/dsh-service' '1786640000'
   ! read_manifest "$MANIFEST_PATH"
 }
 
@@ -186,7 +187,7 @@ test_manifest_rejects_node_bin_directory() {
   prepare_manifest
   node_directory="$TEST_ROOT/bin/node-directory"
   mkdir "$node_directory" || return 1
-  write_manifest "$MANIFEST_PATH" "$node_directory" '0.1.0' 'bin/dsh-mac' '1786640000'
+  write_manifest "$MANIFEST_PATH" "$node_directory" '0.1.0' 'bin/dsh-service' '1786640000'
   ! read_manifest "$MANIFEST_PATH"
 }
 
@@ -200,7 +201,7 @@ test_manifest_does_not_execute_substitutions() {
   prepare_manifest
   marker="$TEST_ROOT/injected"
   payload='$(touch '"$marker"')'
-  write_manifest "$MANIFEST_PATH" "$MANIFEST_NODE_PATH" "$payload" 'bin/dsh-mac' '1786640000'
+  write_manifest "$MANIFEST_PATH" "$MANIFEST_NODE_PATH" "$payload" 'bin/dsh-service' '1786640000'
   read_manifest "$MANIFEST_PATH" || return 1
   assert_eq "$payload" "$MANIFEST_DSH_VERSION" || return 1
   [ ! -e "$marker" ]
@@ -211,7 +212,7 @@ test_manifest_preserves_spaces_and_equals() {
   manifest_path="$TEST_ROOT/manifest with spaces.env"
   node_path="$TEST_ROOT/bin/node = executable"
   dsh_version='release candidate = six'
-  write_manifest "$manifest_path" "$node_path" "$dsh_version" 'bin/dsh-mac' '1786640000'
+  write_manifest "$manifest_path" "$node_path" "$dsh_version" 'bin/dsh-service' '1786640000'
   read_manifest "$manifest_path" || return 1
   assert_eq "$node_path" "$MANIFEST_NODE_BIN" || return 1
   assert_eq "$dsh_version" "$MANIFEST_DSH_VERSION"
@@ -277,21 +278,21 @@ test_activation_rejects_missing_keys() {
 prepare_preflight_fakes() {
   write_fake launchctl 'exit 0'
   write_fake command-noop 'exit 0'
-  DSH_MAC_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
-  DSH_MAC_PLUTIL_BIN="$TEST_ROOT/bin/command-noop"
-  DSH_MAC_LSOF_BIN="$TEST_ROOT/bin/command-noop"
-  DSH_MAC_CURL_BIN="$TEST_ROOT/bin/command-noop"
-  DSH_MAC_OPEN_BIN="$TEST_ROOT/bin/command-noop"
-  DSH_MAC_TAIL_BIN="$TEST_ROOT/bin/command-noop"
+  DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
+  DSH_SERVICE_PLUTIL_BIN="$TEST_ROOT/bin/command-noop"
+  DSH_SERVICE_LSOF_BIN="$TEST_ROOT/bin/command-noop"
+  DSH_SERVICE_CURL_BIN="$TEST_ROOT/bin/command-noop"
+  DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/command-noop"
+  DSH_SERVICE_TAIL_BIN="$TEST_ROOT/bin/command-noop"
   init_command_paths
 }
 
 test_common_preflight_accepts_valid_environment_without_mutation() (
   prepare_preflight_fakes
   init_paths
-  [ ! -e "$DSH_MAC_ROOT" ] || return 1
+  [ ! -e "$DSH_SERVICE_ROOT" ] || return 1
   preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" || return 1
-  [ ! -e "$DSH_MAC_ROOT" ]
+  [ ! -e "$DSH_SERVICE_ROOT" ]
 )
 
 test_common_preflight_rejects_relative_home() (
@@ -309,7 +310,7 @@ home"
 
 test_common_preflight_requires_launchd_domain() (
   write_fake launchctl-fail 'exit 1'
-  DSH_MAC_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl-fail"
+  DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl-fail"
   init_command_paths
   ! preflight_common
 )
@@ -332,12 +333,12 @@ test_install_preflight_resolves_caller_node_and_npm() (
   write_fake npm 'exit 0'
   PATH="$TEST_ROOT/bin:/usr/bin:/bin"
   init_paths
-  [ ! -e "$DSH_MAC_ROOT" ] || return 1
+  [ ! -e "$DSH_SERVICE_ROOT" ] || return 1
   preflight_install || return 1
   assert_eq "$TEST_ROOT/bin/node" "$NODE_BIN" || return 1
   assert_eq "$TEST_ROOT/bin/npm" "$NPM_BIN" || return 1
   assert_eq '22.19.0' "$NODE_VERSION" || return 1
-  [ ! -e "$DSH_MAC_ROOT" ]
+  [ ! -e "$DSH_SERVICE_ROOT" ]
 )
 
 test_install_preflight_rejects_node_function() (
@@ -369,7 +370,7 @@ test_install_preflight_requires_open() (
   prepare_preflight_fakes
   write_fake node 'printf "v22.19.0\\n"'
   write_fake npm 'exit 0'
-  DSH_MAC_OPEN_BIN="$TEST_ROOT/bin/missing-open"
+  DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/missing-open"
   PATH="$TEST_ROOT/bin:/usr/bin:/bin"
   init_command_paths
   ! preflight_install
@@ -383,41 +384,41 @@ use_lock_home() {
 
 test_lock_is_exclusive_and_releasable() (
   use_lock_home exclusive || return 1
-  mkdir -p "$DSH_MAC_ROOT" || return 1
+  mkdir -p "$DSH_SERVICE_ROOT" || return 1
   acquire_lock || return 1
   ! ( acquire_lock ) || return 1
   release_lock || return 1
-  [ ! -e "$DSH_MAC_ROOT/.lock" ]
+  [ ! -e "$DSH_SERVICE_ROOT/.lock" ]
 )
 
 test_stale_lock_is_reclaimed() (
   use_lock_home stale || return 1
-  mkdir -p "$DSH_MAC_ROOT/.lock" || return 1
-  printf '99999999\n' >"$DSH_MAC_ROOT/.lock/pid"
+  mkdir -p "$DSH_SERVICE_ROOT/.lock" || return 1
+  printf '99999999\n' >"$DSH_SERVICE_ROOT/.lock/pid"
   acquire_lock || return 1
-  assert_eq "$$" "$(<"$DSH_MAC_ROOT/.lock/pid")" || return 1
+  assert_eq "$$" "$(<"$DSH_SERVICE_ROOT/.lock/pid")" || return 1
   release_lock
 )
 
 test_malformed_lock_is_not_reclaimed() (
   use_lock_home malformed || return 1
-  mkdir -p "$DSH_MAC_ROOT/.lock" || return 1
-  printf 'not-a-pid\n' >"$DSH_MAC_ROOT/.lock/pid"
+  mkdir -p "$DSH_SERVICE_ROOT/.lock" || return 1
+  printf 'not-a-pid\n' >"$DSH_SERVICE_ROOT/.lock/pid"
   ! acquire_lock
 )
 
 test_multiline_lock_owner_is_not_reclaimed() (
   use_lock_home multiline || return 1
-  mkdir -p "$DSH_MAC_ROOT/.lock" || return 1
-  printf '99999999\n\n' >"$DSH_MAC_ROOT/.lock/pid"
+  mkdir -p "$DSH_SERVICE_ROOT/.lock" || return 1
+  printf '99999999\n\n' >"$DSH_SERVICE_ROOT/.lock/pid"
   ! acquire_lock || return 1
-  [ -d "$DSH_MAC_ROOT/.lock" ]
+  [ -d "$DSH_SERVICE_ROOT/.lock" ]
 )
 
 test_lock_symlink_does_not_remove_outside_pid() (
   use_lock_home symlink || return 1
   outside_lock="$TEST_ROOT/outside-lock"
-  mkdir -p "$DSH_MAC_ROOT" "$outside_lock" || return 1
+  mkdir -p "$DSH_SERVICE_ROOT" "$outside_lock" || return 1
   printf '99999999\n' >"$outside_lock/pid"
   ln -s "$outside_lock" "$LOCK_DIR" || return 1
   ! acquire_lock || return 1
@@ -427,7 +428,7 @@ test_lock_symlink_does_not_remove_outside_pid() (
 test_release_rejects_lock_symlink_without_outside_mutation() (
   use_lock_home release-symlink || return 1
   outside_lock="$TEST_ROOT/outside-release-lock"
-  mkdir -p "$DSH_MAC_ROOT" "$outside_lock" || return 1
+  mkdir -p "$DSH_SERVICE_ROOT" "$outside_lock" || return 1
   printf '%s\n' "$$" >"$outside_lock/pid"
   ln -s "$outside_lock" "$LOCK_DIR" || return 1
   ! release_lock || return 1
@@ -437,7 +438,7 @@ test_release_rejects_lock_symlink_without_outside_mutation() (
 test_exit_cleanup_ignores_lock_symlink() (
   use_lock_home cleanup-symlink || return 1
   outside_lock="$TEST_ROOT/outside-cleanup-lock"
-  mkdir -p "$DSH_MAC_ROOT" "$outside_lock" || return 1
+  mkdir -p "$DSH_SERVICE_ROOT" "$outside_lock" || return 1
   printf '%s\n' "$$" >"$outside_lock/pid"
   ln -s "$outside_lock" "$LOCK_DIR" || return 1
   release_lock_if_owned
@@ -446,15 +447,15 @@ test_exit_cleanup_ignores_lock_symlink() (
 
 test_release_does_not_remove_another_owner_lock() (
   use_lock_home another-owner || return 1
-  mkdir -p "$DSH_MAC_ROOT/.lock" || return 1
-  printf '1\n' >"$DSH_MAC_ROOT/.lock/pid"
+  mkdir -p "$DSH_SERVICE_ROOT/.lock" || return 1
+  printf '1\n' >"$DSH_SERVICE_ROOT/.lock/pid"
   ! release_lock || return 1
-  [ -d "$DSH_MAC_ROOT/.lock" ]
+  [ -d "$DSH_SERVICE_ROOT/.lock" ]
 )
 
 test_term_releases_lock_and_stops_later_mutation() {
   use_lock_home signal || return 1
-  mkdir -p "$DSH_MAC_ROOT" || return 1
+  mkdir -p "$DSH_SERVICE_ROOT" || return 1
   mutation_log="$TEST_ROOT/mutation.log"
   fake_pid_file="$TEST_ROOT/mutating-fake.pid"
   write_fake mutating-fake '
@@ -468,7 +469,7 @@ while :; do
 done'
 
   /bin/bash -c '
-    export DSH_MAC_SOURCE_ONLY=1
+    export DSH_SERVICE_SOURCE_ONLY=1
     . "$1" || exit 1
     init_paths
     acquire_lock || exit 1
@@ -503,14 +504,14 @@ done'
 }
 
 test_version_command_prints_manager_version() {
-  actual=$(DSH_MAC_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" version 2>&1)
+  actual=$(DSH_SERVICE_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" version 2>&1)
   status=$?
   assert_eq 0 "$status" || return 1
   assert_eq '0.1.0' "$actual"
 }
 
 test_unknown_command_fails() {
-  DSH_MAC_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" unknown >/dev/null 2>&1
+  DSH_SERVICE_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" unknown >/dev/null 2>&1
   [ "$?" -ne 0 ]
 }
 

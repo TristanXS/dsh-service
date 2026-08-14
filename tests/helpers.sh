@@ -1,14 +1,14 @@
 #!/bin/bash
 set -u
 
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/dsh-mac-tests.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/dsh-service-tests.XXXXXX")"
 export HOME="$TEST_ROOT/home"
-export DSH_MAC_TESTING=1
+export DSH_SERVICE_TESTING=1
 mkdir -p "$HOME" "$TEST_ROOT/bin"
 
 cleanup_test_root() {
   case "$TEST_ROOT" in
-    "${TMPDIR:-/tmp}"/dsh-mac-tests.*) /bin/rm -rf -- "$TEST_ROOT" ;;
+    "${TMPDIR:-/tmp}"/dsh-service-tests.*) /bin/rm -rf -- "$TEST_ROOT" ;;
     *) printf 'unsafe test root: %s\n' "$TEST_ROOT" >&2; return 1 ;;
   esac
 }

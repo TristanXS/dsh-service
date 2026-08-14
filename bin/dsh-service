@@ -1,16 +1,17 @@
 #!/bin/bash
+# shellcheck disable=SC2016,SC2034,SC2119,SC2120,SC2317
 set -u
 
 MANAGER_VERSION=0.1.0
 MANAGER_SCRIPT_PATH=${BASH_SOURCE[0]}
 
 die() {
-  printf 'dsh-mac: error: %s\n' "$*" >&2
+  printf 'dsh-service: error: %s\n' "$*" >&2
   return 1
 }
 
 note() {
-  printf 'dsh-mac: %s\n' "$*" >&2
+  printf 'dsh-service: %s\n' "$*" >&2
 }
 
 init_command_paths() {
@@ -23,32 +24,32 @@ init_command_paths() {
   WAIT_ATTEMPTS=30
   WAIT_INTERVAL=1
   WAIT_TIMEOUT_SECONDS=30
-  if [ "${DSH_MAC_TESTING:-0}" = 1 ]; then
-    LAUNCHCTL_BIN="${DSH_MAC_LAUNCHCTL_BIN:-$LAUNCHCTL_BIN}"
-    PLUTIL_BIN="${DSH_MAC_PLUTIL_BIN:-$PLUTIL_BIN}"
-    LSOF_BIN="${DSH_MAC_LSOF_BIN:-$LSOF_BIN}"
-    CURL_BIN="${DSH_MAC_CURL_BIN:-$CURL_BIN}"
-    OPEN_BIN="${DSH_MAC_OPEN_BIN:-$OPEN_BIN}"
-    TAIL_BIN="${DSH_MAC_TAIL_BIN:-$TAIL_BIN}"
-    WAIT_ATTEMPTS="${DSH_MAC_WAIT_ATTEMPTS:-3}"
-    WAIT_INTERVAL="${DSH_MAC_WAIT_INTERVAL:-0}"
-    WAIT_TIMEOUT_SECONDS="${DSH_MAC_WAIT_TIMEOUT_SECONDS:-30}"
+  if [ "${DSH_SERVICE_TESTING:-0}" = 1 ]; then
+    LAUNCHCTL_BIN="${DSH_SERVICE_LAUNCHCTL_BIN:-$LAUNCHCTL_BIN}"
+    PLUTIL_BIN="${DSH_SERVICE_PLUTIL_BIN:-$PLUTIL_BIN}"
+    LSOF_BIN="${DSH_SERVICE_LSOF_BIN:-$LSOF_BIN}"
+    CURL_BIN="${DSH_SERVICE_CURL_BIN:-$CURL_BIN}"
+    OPEN_BIN="${DSH_SERVICE_OPEN_BIN:-$OPEN_BIN}"
+    TAIL_BIN="${DSH_SERVICE_TAIL_BIN:-$TAIL_BIN}"
+    WAIT_ATTEMPTS="${DSH_SERVICE_WAIT_ATTEMPTS:-3}"
+    WAIT_INTERVAL="${DSH_SERVICE_WAIT_INTERVAL:-0}"
+    WAIT_TIMEOUT_SECONDS="${DSH_SERVICE_WAIT_TIMEOUT_SECONDS:-30}"
   fi
 }
 
 init_paths() {
-  DSH_MAC_ROOT="$HOME/Library/Application Support/dsh-mac"
-  RELEASES_DIR="$DSH_MAC_ROOT/releases"
-  CURRENT_LINK="$DSH_MAC_ROOT/current"
-  PREVIOUS_LINK="$DSH_MAC_ROOT/previous"
-  ACTIVATION_FILE="$DSH_MAC_ROOT/activation.env"
-  LOCK_DIR="$DSH_MAC_ROOT/.lock"
-  WORKSPACE_DIR="$DSH_MAC_ROOT/workspace"
-  RUNNER_TEMPLATE="$DSH_MAC_ROOT/libexec/dsh-mac-run"
-  CLI_DEST="$HOME/.local/bin/dsh-mac"
-  PLIST_PATH="$HOME/Library/LaunchAgents/dev.dsh-mac.web.plist"
-  LOG_DIR="$HOME/Library/Logs/dsh-mac"
-  SERVICE_TARGET="gui/$(/usr/bin/id -u)/dev.dsh-mac.web"
+  DSH_SERVICE_ROOT="$HOME/Library/Application Support/dsh-service"
+  RELEASES_DIR="$DSH_SERVICE_ROOT/releases"
+  CURRENT_LINK="$DSH_SERVICE_ROOT/current"
+  PREVIOUS_LINK="$DSH_SERVICE_ROOT/previous"
+  ACTIVATION_FILE="$DSH_SERVICE_ROOT/activation.env"
+  LOCK_DIR="$DSH_SERVICE_ROOT/.lock"
+  WORKSPACE_DIR="$DSH_SERVICE_ROOT/workspace"
+  RUNNER_TEMPLATE="$DSH_SERVICE_ROOT/libexec/dsh-service-run"
+  CLI_DEST="$HOME/.local/bin/dsh-service"
+  PLIST_PATH="$HOME/Library/LaunchAgents/dev.dsh-service.web.plist"
+  LOG_DIR="$HOME/Library/Logs/dsh-service"
+  SERVICE_TARGET="gui/$(/usr/bin/id -u)/dev.dsh-service.web"
 }
 
 xml_escape() {
@@ -76,7 +77,7 @@ render_plist() {
   printf '%s\n' '<plist version="1.0">'
   printf '%s\n' '<dict>'
   printf '%s\n' '  <key>Label</key>'
-  printf '%s\n' '  <string>dev.dsh-mac.web</string>'
+  printf '%s\n' '  <string>dev.dsh-service.web</string>'
   printf '%s\n' '  <key>ProgramArguments</key>'
   printf '%s\n' '  <array>'
   printf '%s\n' '    <string>/bin/bash</string>'
@@ -782,7 +783,7 @@ write_activation() {
   candidate_release=$2
   activation_tmp="$ACTIVATION_FILE.tmp.$$"
 
-  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
+  [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ] || {
     die 'manager root is unavailable for activation journal'
     return 1
   }
@@ -901,8 +902,8 @@ prune_releases() {
     validate_release_id "$child_id" || continue
     [ -d "$child" ] && [ ! -L "$child" ] || continue
     [ "$child_id" != "$current_id" ] && [ "$child_id" != "$previous_id" ] || continue
-    child_physical=$(CDPATH= cd -P -- "$child" && pwd) || return 1
-    child_parent=$(CDPATH= cd -P -- "$child_physical/.." && pwd) || return 1
+    child_physical=$(CDPATH='' cd -P -- "$child" && pwd) || return 1
+    child_parent=$(CDPATH='' cd -P -- "$child_physical/.." && pwd) || return 1
     [ "$child_parent" = "$owned_releases_physical" ] || {
       die 'release candidate is outside the releases directory'
       return 1
@@ -1274,7 +1275,7 @@ preflight_manager_destinations() {
   validate_optional_install_directory "${CLI_DEST%/*}" || return 1
   validate_optional_install_directory "$HOME/Library" || return 1
   validate_optional_install_directory "$HOME/Library/Application Support" || return 1
-  validate_optional_install_directory "$DSH_MAC_ROOT" || return 1
+  validate_optional_install_directory "$DSH_SERVICE_ROOT" || return 1
   validate_optional_install_directory "${RUNNER_TEMPLATE%/*}" || return 1
   validate_optional_manager_file "$CLI_DEST" || return 1
   validate_optional_manager_file "$RUNNER_TEMPLATE"
@@ -1284,7 +1285,7 @@ resolve_manager_sources() {
   [ "$#" -eq 0 ] || return 1
   local invoked_path source_dir source_name checkout_runner runner_parent
   invoked_path=$MANAGER_SCRIPT_PATH
-  source_dir=$(CDPATH= cd -P -- "$(dirname -- "$invoked_path")" && pwd) || {
+  source_dir=$(CDPATH='' cd -P -- "$(dirname -- "$invoked_path")" && pwd) || {
     die 'could not resolve the manager command source'
     return 1
   }
@@ -1295,9 +1296,9 @@ resolve_manager_sources() {
     return 1
   }
 
-  checkout_runner="$source_dir/../libexec/dsh-mac-run"
+  checkout_runner="$source_dir/../libexec/dsh-service-run"
   if [ -f "$checkout_runner" ] && [ ! -L "$checkout_runner" ]; then
-    runner_parent=$(CDPATH= cd -P -- "$(dirname -- "$checkout_runner")" && pwd) || return 1
+    runner_parent=$(CDPATH='' cd -P -- "$(dirname -- "$checkout_runner")" && pwd) || return 1
     MANAGER_RUNNER_SOURCE="$runner_parent/$(basename -- "$checkout_runner")"
   elif [ -f "$RUNNER_TEMPLATE" ] && [ ! -L "$RUNNER_TEMPLATE" ]; then
     MANAGER_RUNNER_SOURCE=$RUNNER_TEMPLATE
@@ -1310,8 +1311,8 @@ resolve_manager_sources() {
     die 'manager source failed syntax validation'
     return 1
   }
-  if { [ -e "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; } &&
-    { [ ! -d "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; }; then
+  if { [ -e "$DSH_SERVICE_ROOT" ] || [ -L "$DSH_SERVICE_ROOT" ]; } &&
+    { [ ! -d "$DSH_SERVICE_ROOT" ] || [ -L "$DSH_SERVICE_ROOT" ]; }; then
     die 'manager root must be a physical directory'
     return 1
   fi
@@ -1358,10 +1359,10 @@ resolve_release_cli() {
   cli_relative_safe "$resolve_cli_relative" || return 1
   [ -d "$resolve_release_root" ] && [ ! -L "$resolve_release_root" ] || return 1
 
-  resolved_release_root=$(CDPATH= cd -P -- "$resolve_release_root" && pwd) || return 1
+  resolved_release_root=$(CDPATH='' cd -P -- "$resolve_release_root" && pwd) || return 1
   cli_candidate="$resolved_release_root/$resolve_cli_relative"
   [ -f "$cli_candidate" ] && [ ! -L "$cli_candidate" ] || return 1
-  cli_parent=$(CDPATH= cd -P -- "$(dirname -- "$cli_candidate")" && pwd) || return 1
+  cli_parent=$(CDPATH='' cd -P -- "$(dirname -- "$cli_candidate")" && pwd) || return 1
   case "$cli_parent/" in
     "$resolved_release_root/"*) ;;
     *) return 1 ;;
@@ -1398,11 +1399,11 @@ cli_version_matches() (
 
 release_root_is_owned() {
   [ "$#" -eq 0 ] || return 1
-  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || return 1
+  [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ] || return 1
   [ -d "$RELEASES_DIR" ] && [ ! -L "$RELEASES_DIR" ] || return 1
 
-  owned_root_physical=$(CDPATH= cd -P -- "$DSH_MAC_ROOT" && pwd) || return 1
-  owned_releases_physical=$(CDPATH= cd -P -- "$RELEASES_DIR" && pwd) || return 1
+  owned_root_physical=$(CDPATH='' cd -P -- "$DSH_SERVICE_ROOT" && pwd) || return 1
+  owned_releases_physical=$(CDPATH='' cd -P -- "$RELEASES_DIR" && pwd) || return 1
   [ "$owned_releases_physical" = "$owned_root_physical/releases" ]
 }
 
@@ -1411,8 +1412,8 @@ release_dir_is_owned() {
   release_root_is_owned || return 1
   owned_release_candidate=$1
   [ -d "$owned_release_candidate" ] && [ ! -L "$owned_release_candidate" ] || return 1
-  owned_release_physical=$(CDPATH= cd -P -- "$owned_release_candidate" && pwd) || return 1
-  owned_release_parent=$(CDPATH= cd -P -- "$owned_release_physical/.." && pwd) || return 1
+  owned_release_physical=$(CDPATH='' cd -P -- "$owned_release_candidate" && pwd) || return 1
+  owned_release_parent=$(CDPATH='' cd -P -- "$owned_release_physical/.." && pwd) || return 1
   [ "$owned_release_parent" = "$owned_releases_physical" ]
 }
 
@@ -1501,10 +1502,10 @@ atomic_release_link() {
   fi
 
   link_serial=$$
-  link_tmp="$DSH_MAC_ROOT/.release-link-$link_serial"
+  link_tmp="$DSH_SERVICE_ROOT/.release-link-$link_serial"
   while [ -e "$link_tmp" ] || [ -L "$link_tmp" ]; do
     link_serial=$((link_serial + 1))
-    link_tmp="$DSH_MAC_ROOT/.release-link-$link_serial"
+    link_tmp="$DSH_SERVICE_ROOT/.release-link-$link_serial"
   done
   expected_link_target="releases/$release_id"
   /bin/ln -s "$expected_link_target" "$link_tmp" || {
@@ -1837,7 +1838,7 @@ acquire_lock() {
     return 1
   }
   if kill -0 "$stale_owner" 2>/dev/null; then
-    die "another dsh-mac operation is running (pid $stale_owner)"
+    die "another dsh-service operation is running (pid $stale_owner)"
     return 1
   fi
 
@@ -1905,12 +1906,12 @@ prepare_install_lock_root() {
 
   record_install_directory "$HOME/Library" INSTALL_CREATED_LIBRARY || return 1
   record_install_directory "$HOME/Library/Application Support" INSTALL_CREATED_APP_SUPPORT || return 1
-  record_install_directory "$DSH_MAC_ROOT" INSTALL_CREATED_ROOT
+  record_install_directory "$DSH_SERVICE_ROOT" INSTALL_CREATED_ROOT
 }
 
 prepare_install_payload_directories() {
   [ "$#" -eq 0 ] || return 1
-  record_install_directory "$DSH_MAC_ROOT/libexec" INSTALL_CREATED_LIBEXEC || return 1
+  record_install_directory "$DSH_SERVICE_ROOT/libexec" INSTALL_CREATED_LIBEXEC || return 1
   record_install_directory "$HOME/.local" INSTALL_CREATED_LOCAL || return 1
   record_install_directory "${CLI_DEST%/*}" INSTALL_CREATED_BIN
 }
@@ -1923,8 +1924,8 @@ cleanup_install_directories() {
   [ "${INSTALL_CREATED_RELEASES:-0}" -eq 0 ] || /bin/rmdir -- "$RELEASES_DIR" 2>/dev/null || :
   [ "${INSTALL_CREATED_BIN:-0}" -eq 0 ] || /bin/rmdir -- "${CLI_DEST%/*}" 2>/dev/null || :
   [ "${INSTALL_CREATED_LOCAL:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/.local" 2>/dev/null || :
-  [ "${INSTALL_CREATED_LIBEXEC:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_MAC_ROOT/libexec" 2>/dev/null || :
-  [ "${INSTALL_CREATED_ROOT:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_MAC_ROOT" 2>/dev/null || :
+  [ "${INSTALL_CREATED_LIBEXEC:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_SERVICE_ROOT/libexec" 2>/dev/null || :
+  [ "${INSTALL_CREATED_ROOT:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_SERVICE_ROOT" 2>/dev/null || :
   [ "${INSTALL_CREATED_APP_SUPPORT:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library/Application Support" 2>/dev/null || :
   [ "${INSTALL_CREATED_LIBRARY:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library" 2>/dev/null || :
 }
@@ -1935,10 +1936,10 @@ next_manager_transaction_path() {
   transaction_dir=$1
   transaction_kind=$2
   transaction_serial=$$
-  transaction_path="$transaction_dir/.dsh-mac-$transaction_kind-$transaction_serial"
+  transaction_path="$transaction_dir/.dsh-service-$transaction_kind-$transaction_serial"
   while [ -e "$transaction_path" ] || [ -L "$transaction_path" ]; do
     transaction_serial=$((transaction_serial + 1))
-    transaction_path="$transaction_dir/.dsh-mac-$transaction_kind-$transaction_serial"
+    transaction_path="$transaction_dir/.dsh-service-$transaction_kind-$transaction_serial"
   done
   printf '%s\n' "$transaction_path"
 }
@@ -2091,7 +2092,7 @@ print_path_hint() {
   case ":${PATH:-}:" in
     *":$manager_bin:"*) return 0 ;;
   esac
-  printf 'Add dsh-mac to PATH:\n' >&2
+  printf 'Add dsh-service to PATH:\n' >&2
   printf '  export PATH="%s:$PATH"\n' "$manager_bin" >&2
   printf 'Executable: %s\n' "$CLI_DEST" >&2
 }
@@ -2099,8 +2100,8 @@ print_path_hint() {
 preflight_service_command() {
   [ "$#" -eq 0 ] || return 1
   preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" || return 1
-  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
-    die 'dsh-mac is not installed'
+  [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ] || {
+    die 'dsh-service is not installed'
     return 1
   }
 }
@@ -2144,7 +2145,7 @@ cmd_restart() {
 
 cmd_install() {
   [ "$#" -eq 0 ] || {
-    die 'usage: dsh-mac install'
+    die 'usage: dsh-service install'
     return 64
   }
   local install_status staged_release current_id
@@ -2208,7 +2209,7 @@ cmd_install() {
 
 cmd_status() {
   [ "$#" -eq 0 ] || {
-    die 'usage: dsh-mac status'
+    die 'usage: dsh-service status'
     return 64
   }
   local status_dsh_version status_launchd status_pid status_health status_code
@@ -2246,7 +2247,7 @@ cmd_status() {
 
 cmd_open() {
   [ "$#" -eq 0 ] || {
-    die 'usage: dsh-mac open'
+    die 'usage: dsh-service open'
     return 64
   }
   preflight_common "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
@@ -2263,7 +2264,7 @@ cmd_open() {
 
 cmd_logs() {
   [ "$#" -eq 0 ] || {
-    die 'usage: dsh-mac logs'
+    die 'usage: dsh-service logs'
     return 64
   }
   preflight_common "$TAIL_BIN" || return 1
@@ -2278,21 +2279,21 @@ validate_uninstall_root() {
     *) return 1 ;;
   esac
   [ -n "$HOME" ] || return 1
-  expected_root="$HOME/Library/Application Support/dsh-mac"
-  [ "$DSH_MAC_ROOT" = "$expected_root" ] || return 1
-  [ "$DSH_MAC_ROOT" != / ] || return 1
-  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ]
+  expected_root="$HOME/Library/Application Support/dsh-service"
+  [ "$DSH_SERVICE_ROOT" = "$expected_root" ] || return 1
+  [ "$DSH_SERVICE_ROOT" != / ] || return 1
+  [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ]
 }
 
 cmd_uninstall() {
   [ "$#" -eq 0 ] || {
-    die 'usage: dsh-mac uninstall'
+    die 'usage: dsh-service uninstall'
     return 64
   }
   local uninstall_status
   preflight_common || return 1
-  if { [ -e "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; } &&
-    { [ ! -d "$DSH_MAC_ROOT" ] || [ -L "$DSH_MAC_ROOT" ]; }; then
+  if { [ -e "$DSH_SERVICE_ROOT" ] || [ -L "$DSH_SERVICE_ROOT" ]; } &&
+    { [ ! -d "$DSH_SERVICE_ROOT" ] || [ -L "$DSH_SERVICE_ROOT" ]; }; then
     die 'manager root is unsafe for uninstall'
     return 1
   fi
@@ -2332,7 +2333,7 @@ cmd_uninstall() {
     return 1
   fi
 
-  /bin/rm -rf -- "$DSH_MAC_ROOT" || {
+  /bin/rm -rf -- "$DSH_SERVICE_ROOT" || {
     die 'could not remove manager root'
     return 1
   }
@@ -2345,13 +2346,13 @@ cmd_uninstall() {
 
 cmd_update() {
   [ "$#" -eq 0 ] || {
-    die 'usage: dsh-mac update'
+    die 'usage: dsh-service update'
     return 1
   }
   local update_status staged_release current_id
   preflight_install || return 1
-  [ -d "$DSH_MAC_ROOT" ] && [ ! -L "$DSH_MAC_ROOT" ] || {
-    die 'dsh-mac is not installed'
+  [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ] || {
+    die 'dsh-service is not installed'
     return 1
   }
   acquire_lock || return 1
@@ -2383,7 +2384,7 @@ cmd_update() {
 
 print_usage() {
   printf '%s\n' \
-    'Usage: dsh-mac COMMAND' \
+    'Usage: dsh-service COMMAND' \
     '' \
     'Commands:' \
     '  install    Install and start DSH' \
@@ -2394,7 +2395,7 @@ print_usage() {
     '  open       Open the verified healthy service' \
     '  logs       Follow the service logs' \
     '  update     Install the latest DSH release' \
-    '  uninstall  Remove dsh-mac and its service' \
+    '  uninstall  Remove dsh-service and its service' \
     '  version    Print the manager version' \
     '  help       Show this help'
 }
@@ -2463,7 +2464,7 @@ main() {
 init_command_paths
 init_paths
 
-if [ "${DSH_MAC_SOURCE_ONLY:-0}" = 1 ]; then
+if [ "${DSH_SERVICE_SOURCE_ONLY:-0}" = 1 ]; then
   return 0 2>/dev/null || exit 0
 fi
 
