@@ -8,6 +8,18 @@ REPO_ROOT="$(CDPATH='' cd -- "$TESTS_DIR/.." && pwd)"
 . "$TESTS_DIR/helpers.sh"
 
 repository_is_complete() {
+  [ ! -e "$REPO_ROOT/docs/superpowers" ] || {
+    printf 'internal Superpowers documents must not be published: %s\n' "$REPO_ROOT/docs/superpowers" >&2
+    return 1
+  }
+
+  for ignore_pattern in '.superpowers/' 'docs/research/' 'docs/superpowers/'; do
+    /usr/bin/grep -Fqx -- "$ignore_pattern" "$REPO_ROOT/.gitignore" || {
+      printf 'missing internal-document ignore rule: %s\n' "$ignore_pattern" >&2
+      return 1
+    }
+  done
+
   for executable_path in \
     "$REPO_ROOT/bin/dsh-service" \
     "$REPO_ROOT/libexec/dsh-service-run" \
