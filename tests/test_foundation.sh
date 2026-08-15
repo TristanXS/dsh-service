@@ -7,6 +7,8 @@ CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
+export DSH_SERVICE_PLATFORM=darwin
+
 export DSH_SERVICE_SOURCE_ONLY=1
 if ! . "$CLI_PATH"; then
   printf 'could not source CLI: %s\n' "$CLI_PATH" >&2
@@ -38,7 +40,7 @@ test_init_paths_uses_home() {
   assert_eq "$DSH_SERVICE_ROOT/.lock" "$LOCK_DIR" || return 1
   assert_eq "$DSH_SERVICE_ROOT/workspace" "$WORKSPACE_DIR" || return 1
   assert_eq "$HOME/.local/bin/dsh-service" "$CLI_DEST" || return 1
-  assert_eq "$HOME/Library/LaunchAgents/dev.dsh-service.web.plist" "$PLIST_PATH" || return 1
+  assert_eq "$HOME/Library/LaunchAgents/dev.dsh-service.web.plist" "$SERVICE_DEFINITION_PATH" || return 1
   assert_eq "$HOME/Library/Logs/dsh-service" "$LOG_DIR" || return 1
   assert_eq "gui/$uid/dev.dsh-service.web" "$SERVICE_TARGET"
 }

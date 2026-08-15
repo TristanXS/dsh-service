@@ -7,6 +7,8 @@ CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
+export DSH_SERVICE_PLATFORM=darwin
+
 assert_contains() {
   case "$1" in
     *"$2"*) return 0 ;;

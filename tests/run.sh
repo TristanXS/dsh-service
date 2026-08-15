@@ -62,6 +62,10 @@ run_launchd_tests() {
   /bin/bash "$TESTS_DIR/test_launchd.sh"
 }
 
+run_systemd_tests() {
+  /bin/bash "$TESTS_DIR/test_systemd.sh"
+}
+
 run_activation_tests() {
   /bin/bash "$TESTS_DIR/test_activation.sh"
 }
@@ -74,6 +78,7 @@ run_test 'repository completeness' repository_is_complete
 run_test 'foundation test suite' run_foundation_tests
 run_test 'runtime test suite' run_runtime_tests
 run_test 'launchd test suite' run_launchd_tests
+run_test 'systemd test suite' run_systemd_tests
 run_test 'activation test suite' run_activation_tests
 run_test 'command test suite' run_command_tests
 
