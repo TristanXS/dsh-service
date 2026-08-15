@@ -257,7 +257,14 @@ prepare_launchd_case() {
 
   write_launchd_fakes
   export DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
-  export DSH_SERVICE_PLUTIL_BIN=/usr/bin/plutil
+  if [ -x /usr/bin/plutil ]; then
+    export DSH_SERVICE_PLUTIL_BIN=/usr/bin/plutil
+  else
+    # On Linux hosts the darwin suite runs without a real plist linter; a
+    # permissive fake keeps the flows intact while macOS runs keep full lint.
+    write_fake plutil-pass 'exit 0'
+    export DSH_SERVICE_PLUTIL_BIN="$TEST_ROOT/bin/plutil-pass"
+  fi
   export DSH_SERVICE_LSOF_BIN="$TEST_ROOT/bin/lsof"
   export DSH_SERVICE_CURL_BIN="$TEST_ROOT/bin/curl"
   export DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/open"
@@ -287,7 +294,7 @@ set_lsof_failure() {
 }
 
 plist_identity() {
-  /usr/bin/stat -f '%i:%m' "$SERVICE_DEFINITION_PATH"
+  stat_id '%i:%m' '%i:%Y' "$SERVICE_DEFINITION_PATH"
 }
 
 assert_log_has_line() {
@@ -346,21 +353,23 @@ test_plist_is_valid_and_preserves_special_paths() (
   export DEEPSEEK_API_KEY='another-secret'
 
   ensure_plist || return 1
-  /usr/bin/plutil -lint "$SERVICE_DEFINITION_PATH" >/dev/null || return 1
-  assert_eq dev.dsh-service.web "$(plist_raw Label)" || return 1
-  assert_eq 2 "$(plist_raw ProgramArguments)" || return 1
-  assert_eq /bin/bash "$(plist_raw ProgramArguments.0)" || return 1
-  assert_eq "$CURRENT_LINK/run" "$(plist_raw ProgramArguments.1)" || return 1
-  assert_eq "$WORKSPACE_DIR" "$(plist_raw WorkingDirectory)" || return 1
-  assert_eq "$HOME" "$(plist_raw EnvironmentVariables.HOME)" || return 1
-  assert_eq true "$(plist_raw KeepAlive)" || return 1
-  assert_eq 10 "$(plist_raw ThrottleInterval)" || return 1
-  assert_eq 15 "$(plist_raw ExitTimeOut)" || return 1
-  assert_eq "$LOG_DIR/stdout.log" "$(plist_raw StandardOutPath)" || return 1
-  assert_eq "$LOG_DIR/stderr.log" "$(plist_raw StandardErrorPath)" || return 1
-  if /usr/bin/plutil -extract RunAtLoad raw -o - "$SERVICE_DEFINITION_PATH" >/dev/null 2>&1; then
-    printf 'plist unexpectedly contains RunAtLoad\n' >&2
-    return 1
+  if [ -x /usr/bin/plutil ]; then
+    /usr/bin/plutil -lint "$SERVICE_DEFINITION_PATH" >/dev/null || return 1
+    assert_eq dev.dsh-service.web "$(plist_raw Label)" || return 1
+    assert_eq 2 "$(plist_raw ProgramArguments)" || return 1
+    assert_eq /bin/bash "$(plist_raw ProgramArguments.0)" || return 1
+    assert_eq "$CURRENT_LINK/run" "$(plist_raw ProgramArguments.1)" || return 1
+    assert_eq "$WORKSPACE_DIR" "$(plist_raw WorkingDirectory)" || return 1
+    assert_eq "$HOME" "$(plist_raw EnvironmentVariables.HOME)" || return 1
+    assert_eq true "$(plist_raw KeepAlive)" || return 1
+    assert_eq 10 "$(plist_raw ThrottleInterval)" || return 1
+    assert_eq 15 "$(plist_raw ExitTimeOut)" || return 1
+    assert_eq "$LOG_DIR/stdout.log" "$(plist_raw StandardOutPath)" || return 1
+    assert_eq "$LOG_DIR/stderr.log" "$(plist_raw StandardErrorPath)" || return 1
+    if /usr/bin/plutil -extract RunAtLoad raw -o - "$SERVICE_DEFINITION_PATH" >/dev/null 2>&1; then
+      printf 'plist unexpectedly contains RunAtLoad\n' >&2
+      return 1
+    fi
   fi
   plist_text=$(<"$SERVICE_DEFINITION_PATH")
   case "$plist_text" in

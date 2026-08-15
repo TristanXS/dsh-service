@@ -36,6 +36,19 @@ finish_tests() {
   [ "$FAILURES" -eq 0 ]
 }
 
+stat_id() {
+  stat_bsd_format=$1
+  stat_gnu_format=$2
+  stat_path=$3
+  # GNU stat treats -f as "filesystem status" and would succeed with wrong
+  # data, so pick the dialect from the host kernel instead of trial-and-error.
+  if [ "$(/usr/bin/uname -s 2>/dev/null)" = Darwin ]; then
+    /usr/bin/stat -f "$stat_bsd_format" "$stat_path"
+  else
+    /usr/bin/stat -c "$stat_gnu_format" "$stat_path"
+  fi
+}
+
 write_fake() {
   fake_name=$1
   fake_body=$2

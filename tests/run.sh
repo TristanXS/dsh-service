@@ -42,7 +42,7 @@ repository_is_complete() {
     printf 'required CI workflow is missing or empty: %s\n' "$workflow_path" >&2
     return 1
   }
-  for workflow_requirement in macos-latest 'bash -n' shellcheck tests/run.sh; do
+  for workflow_requirement in macos-latest ubuntu-latest 'bash -n' shellcheck tests/run.sh; do
     /usr/bin/grep -F -- "$workflow_requirement" "$workflow_path" >/dev/null || {
       printf 'CI workflow is missing required content: %s\n' "$workflow_requirement" >&2
       return 1

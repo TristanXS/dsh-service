@@ -1763,6 +1763,17 @@ current_release_id() {
   printf '%s\n' "$current_id"
 }
 
+move_over_link() {
+  [ "$#" -eq 2 ] || return 1
+  # BSD mv replaces a symlink destination with -h; GNU mv needs -T for the
+  # same no-dereference rename. The flag follows the host coreutils, not the
+  # managed service platform, so branch on the live kernel name.
+  case "$(/usr/bin/uname -s 2>/dev/null)" in
+    Darwin) /bin/mv -fh "$1" "$2" ;;
+    *) /bin/mv -fT "$1" "$2" ;;
+  esac
+}
+
 atomic_release_link() {
   [ "$#" -eq 2 ] || {
     die 'atomic_release_link requires a link path and release ID'
@@ -1801,7 +1812,7 @@ atomic_release_link() {
     die 'could not create temporary release link'
     return 1
   }
-  if ! /bin/mv -fh "$link_tmp" "$link_path"; then
+  if ! move_over_link "$link_tmp" "$link_path"; then
     /bin/rm -f -- "$link_tmp"
     die 'could not publish release link'
     return 1

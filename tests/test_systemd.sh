@@ -241,8 +241,7 @@ test_ensure_unit_publishes_0644_and_reloads() {
     prepare_systemd_case || return 1
     ensure_service_definition || return 1
     [ -f "$SERVICE_DEFINITION_PATH" ] || return 1
-    perms=$(/usr/bin/stat -f %Lp "$SERVICE_DEFINITION_PATH" 2>/dev/null) ||
-      perms=$(/usr/bin/stat -c %a "$SERVICE_DEFINITION_PATH") || return 1
+    perms=$(stat_id %Lp %a "$SERVICE_DEFINITION_PATH") || return 1
     assert_eq 644 "$perms" || return 1
     assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|daemon-reload'
   )
