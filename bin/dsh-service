@@ -1520,7 +1520,11 @@ resolve_node_and_npm() {
 
 preflight_install() {
   preflight_manager_destinations || return 1
-  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  if [ "$PLATFORM" = darwin ]; then
+    preflight_common "$PLUTIL_BIN" "$LISTENER_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  else
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
+  fi
   resolve_node_and_npm || return 1
   resolve_manager_sources
 }
@@ -1554,8 +1558,12 @@ preflight_manager_destinations() {
   validate_optional_install_directory "$HOME" || return 1
   validate_optional_install_directory "$HOME/.local" || return 1
   validate_optional_install_directory "${CLI_DEST%/*}" || return 1
-  validate_optional_install_directory "$HOME/Library" || return 1
-  validate_optional_install_directory "$HOME/Library/Application Support" || return 1
+  if [ -n "$ROOT_GRANDPARENT_DIR" ]; then
+    validate_optional_install_directory "$ROOT_GRANDPARENT_DIR" || return 1
+    validate_optional_install_directory "$ROOT_PARENT_DIR" || return 1
+  else
+    validate_optional_install_directory "${XDG_DATA_HOME:-}" || return 1
+  fi
   validate_optional_install_directory "$DSH_SERVICE_ROOT" || return 1
   validate_optional_install_directory "${RUNNER_TEMPLATE%/*}" || return 1
   validate_optional_manager_file "$CLI_DEST" || return 1
@@ -2176,8 +2184,8 @@ record_install_directory() {
 
 prepare_install_lock_root() {
   [ "$#" -eq 0 ] || return 1
-  INSTALL_CREATED_LIBRARY=0
-  INSTALL_CREATED_APP_SUPPORT=0
+  INSTALL_CREATED_ROOT_GRANDPARENT=0
+  INSTALL_CREATED_ROOT_PARENT=0
   INSTALL_CREATED_ROOT=0
   INSTALL_CREATED_LIBEXEC=0
   INSTALL_CREATED_RELEASES=0
@@ -2185,8 +2193,15 @@ prepare_install_lock_root() {
   INSTALL_CREATED_BIN=0
   ACTIVE_STAGING_RELEASE=
 
-  record_install_directory "$HOME/Library" INSTALL_CREATED_LIBRARY || return 1
-  record_install_directory "$HOME/Library/Application Support" INSTALL_CREATED_APP_SUPPORT || return 1
+  if [ -n "$ROOT_GRANDPARENT_DIR" ]; then
+    record_install_directory "$ROOT_GRANDPARENT_DIR" INSTALL_CREATED_ROOT_GRANDPARENT || return 1
+    record_install_directory "$ROOT_PARENT_DIR" INSTALL_CREATED_ROOT_PARENT || return 1
+  else
+    [ -d "${XDG_DATA_HOME:-}" ] && [ ! -L "${XDG_DATA_HOME:-}" ] || {
+      die 'XDG_DATA_HOME must be an existing physical directory'
+      return 1
+    }
+  fi
   record_install_directory "$DSH_SERVICE_ROOT" INSTALL_CREATED_ROOT
 }
 
@@ -2207,8 +2222,8 @@ cleanup_install_directories() {
   [ "${INSTALL_CREATED_LOCAL:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/.local" 2>/dev/null || :
   [ "${INSTALL_CREATED_LIBEXEC:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_SERVICE_ROOT/libexec" 2>/dev/null || :
   [ "${INSTALL_CREATED_ROOT:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_SERVICE_ROOT" 2>/dev/null || :
-  [ "${INSTALL_CREATED_APP_SUPPORT:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library/Application Support" 2>/dev/null || :
-  [ "${INSTALL_CREATED_LIBRARY:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library" 2>/dev/null || :
+  [ "${INSTALL_CREATED_ROOT_PARENT:-0}" -eq 0 ] || [ -z "$ROOT_PARENT_DIR" ] || /bin/rmdir -- "$ROOT_PARENT_DIR" 2>/dev/null || :
+  [ "${INSTALL_CREATED_ROOT_GRANDPARENT:-0}" -eq 0 ] || [ -z "$ROOT_GRANDPARENT_DIR" ] || /bin/rmdir -- "$ROOT_GRANDPARENT_DIR" 2>/dev/null || :
 }
 
 next_manager_transaction_path() {
@@ -2366,6 +2381,18 @@ install_manager_cli() {
   }
 }
 
+warn_if_no_linger() {
+  [ "$#" -eq 0 ] || return 1
+  [ "$PLATFORM" = linux ] || return 0
+  local linger_state install_user
+  install_user=$(/usr/bin/id -un) || return 0
+  [ -f "$LOGINCTL_BIN" ] && [ -x "$LOGINCTL_BIN" ] || return 0
+  linger_state=$("$LOGINCTL_BIN" show-user --value -p Linger "$install_user" 2>/dev/null) || return 0
+  [ "$linger_state" = no ] || return 0
+  note 'lingering is off: the service stops at logout and returns at next login'
+  note "for always-on servers run: loginctl enable-linger $install_user"
+}
+
 print_path_hint() {
   [ "$#" -eq 0 ] || return 1
   local manager_bin
@@ -2380,7 +2407,11 @@ print_path_hint() {
 
 preflight_service_command() {
   [ "$#" -eq 0 ] || return 1
-  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" || return 1
+  if [ "$PLATFORM" = darwin ]; then
+    preflight_common "$PLUTIL_BIN" "$LISTENER_BIN" "$CURL_BIN" || return 1
+  else
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
+  fi
   [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ] || {
     die 'dsh-service is not installed'
     return 1
@@ -2485,6 +2516,7 @@ cmd_install() {
     return 1
   fi
   INSTALL_CLEANUP_ACTIVE=0
+  warn_if_no_linger || :
   print_path_hint
 }
 
@@ -2493,18 +2525,18 @@ cmd_status() {
     die 'usage: dsh-service status'
     return 64
   }
-  local status_dsh_version status_launchd status_pid status_health status_code
-  preflight_common "$LSOF_BIN" "$CURL_BIN" || return 1
+  local status_dsh_version status_supervisor status_pid status_health status_code supervisor_label
+  preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
 
   status_dsh_version='not installed'
   if status_release_id=$(current_release_id 2>/dev/null) &&
     read_manifest "$RELEASES_DIR/$status_release_id/manifest.env" 2>/dev/null; then
     status_dsh_version=$MANIFEST_DSH_VERSION
   fi
-  status_launchd=unloaded
+  status_supervisor=unloaded
   status_pid='-'
   if service_loaded; then
-    status_launchd=loaded
+    status_supervisor=loaded
     status_pid=$(service_pid 2>/dev/null) || status_pid='-'
   fi
 
@@ -2517,13 +2549,35 @@ cmd_status() {
     status_code=$?
   fi
 
+  case "$PLATFORM" in
+    darwin) supervisor_label=Launchd ;;
+    linux) supervisor_label=Systemd ;;
+    *) supervisor_label=Supervisor ;;
+  esac
   printf 'Manager version: %s\n' "$MANAGER_VERSION"
   printf 'DSH version: %s\n' "$status_dsh_version"
-  printf 'Launchd: %s\n' "$status_launchd"
+  printf '%s: %s\n' "$supervisor_label" "$status_supervisor"
   printf 'PID: %s\n' "$status_pid"
   printf 'URL: %s\n' 'http://127.0.0.1:3080'
   printf 'Health: %s\n' "$status_health"
   return "$status_code"
+}
+
+open_linux_url() {
+  [ "$#" -eq 0 ] || return 1
+  local xdg_open_bin
+  if [ "${DSH_SERVICE_TESTING:-0}" = 1 ] && [ -n "${DSH_SERVICE_XDG_OPEN_BIN:-}" ]; then
+    xdg_open_bin=$DSH_SERVICE_XDG_OPEN_BIN
+    [ -f "$xdg_open_bin" ] && [ -x "$xdg_open_bin" ] || xdg_open_bin=
+  else
+    xdg_open_bin=$(resolve_external_command xdg-open) || xdg_open_bin=
+  fi
+  if [ -n "$xdg_open_bin" ] && "$xdg_open_bin" http://127.0.0.1:3080 2>/dev/null; then
+    return 0
+  fi
+  note 'no graphical opener was found; open this URL in a browser'
+  note 'on a remote machine, tunnel first: ssh -L 3080:127.0.0.1:3080 <host>'
+  printf '%s\n' 'http://127.0.0.1:3080'
 }
 
 cmd_open() {
@@ -2531,7 +2585,11 @@ cmd_open() {
     die 'usage: dsh-service open'
     return 64
   }
-  preflight_common "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  if [ "$PLATFORM" = darwin ]; then
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  else
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
+  fi
   if [ -e "$ACTIVATION_FILE" ] || [ -L "$ACTIVATION_FILE" ]; then
     die 'DSH activation was interrupted'
     return 1
@@ -2540,7 +2598,11 @@ cmd_open() {
     die 'DSH service is not healthy'
     return 1
   }
-  "$OPEN_BIN" http://127.0.0.1:3080
+  case "$PLATFORM" in
+    darwin) "$OPEN_BIN" http://127.0.0.1:3080 ;;
+    linux) open_linux_url ;;
+    *) return 1 ;;
+  esac
 }
 
 cmd_logs() {
@@ -2560,7 +2622,11 @@ validate_uninstall_root() {
     *) return 1 ;;
   esac
   [ -n "$HOME" ] || return 1
-  expected_root="$HOME/Library/Application Support/dsh-service"
+  case "$PLATFORM" in
+    darwin) expected_root="$HOME/Library/Application Support/dsh-service" ;;
+    linux) expected_root="${XDG_DATA_HOME:-$HOME/.local/share}/dsh-service" ;;
+    *) return 1 ;;
+  esac
   [ "$DSH_SERVICE_ROOT" = "$expected_root" ] || return 1
   [ "$DSH_SERVICE_ROOT" != / ] || return 1
   [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ]
@@ -2588,14 +2654,30 @@ cmd_uninstall() {
   fi
 
   uninstall_status=0
-  if service_loaded; then
-    "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
-      die 'could not boot out LaunchAgent'
-      uninstall_status=1
-    }
-  fi
+  case "$PLATFORM" in
+    darwin)
+      if service_loaded; then
+        "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
+          die 'could not boot out LaunchAgent'
+          uninstall_status=1
+        }
+      fi
+      ;;
+    linux)
+      if [ -e "$SERVICE_DEFINITION_PATH" ] || service_loaded; then
+        "$SYSTEMCTL_BIN" --user disable --now "$SERVICE_TARGET" || {
+          die 'could not disable the systemd unit'
+          uninstall_status=1
+        }
+      fi
+      ;;
+    *) uninstall_status=1 ;;
+  esac
   if [ "$uninstall_status" -eq 0 ]; then
     /bin/rm -f -- "$SERVICE_DEFINITION_PATH" || uninstall_status=1
+  fi
+  if [ "$uninstall_status" -eq 0 ] && [ "$PLATFORM" = linux ]; then
+    "$SYSTEMCTL_BIN" --user daemon-reload || uninstall_status=1
   fi
   if [ "$uninstall_status" -eq 0 ]; then
     /bin/rm -f -- "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log" || uninstall_status=1

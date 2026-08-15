@@ -403,6 +403,121 @@ test_linux_restart_falls_back_to_stop_and_enable() {
   )
 }
 
+test_linux_status_prints_systemd_label() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 555
+    set_listeners '555|127.0.0.1:3080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    status_output=$(cmd_status) || return 1
+    printf '%s\n' "$status_output" | /usr/bin/grep -Fx 'Systemd: loaded' >/dev/null || return 1
+    printf '%s\n' "$status_output" | /usr/bin/grep -Fx 'PID: 555' >/dev/null || return 1
+    printf '%s\n' "$status_output" | /usr/bin/grep -F 'Launchd:' >/dev/null && return 1
+    return 0
+  )
+}
+
+test_linux_open_uses_xdg_open_when_available() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 555
+    set_listeners '555|127.0.0.1:3080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    cmd_open || return 1
+    assert_log_has_line "$DSH_TEST_XDG_OPEN_LOG" 'http://127.0.0.1:3080'
+  )
+}
+
+test_linux_open_degrades_without_xdg_open() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 555
+    set_listeners '555|127.0.0.1:3080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    export DSH_SERVICE_XDG_OPEN_BIN="$TEST_ROOT/bin/absent-xdg-open"
+    open_output=$(cmd_open 2>/dev/null) || return 1
+    assert_eq 'http://127.0.0.1:3080' "$open_output"
+  )
+}
+
+test_linux_open_degrades_when_xdg_open_fails() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 555
+    set_listeners '555|127.0.0.1:3080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    export DSH_TEST_XDG_OPEN_EXIT=3
+    open_output=$(cmd_open 2>/dev/null) || return 1
+    assert_eq 'http://127.0.0.1:3080' "$open_output"
+  )
+}
+
+test_linux_uninstall_disables_and_removes_unit() {
+  (
+    prepare_systemd_case || return 1
+    export DSH_TEST_HEALTH_AFTER_TRANSITION=1
+    start_service || return 1
+    cmd_uninstall || return 1
+    assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|disable|--now|dsh-service.service' || return 1
+    [ ! -e "$SERVICE_DEFINITION_PATH" ] || return 1
+    [ ! -e "$DSH_SERVICE_ROOT" ]
+  )
+}
+
+test_linux_uninstall_rejects_wrong_root() {
+  (
+    prepare_systemd_case || return 1
+    DSH_SERVICE_ROOT="$TEST_ROOT/elsewhere"
+    validate_uninstall_root && return 1
+    return 0
+  )
+}
+
+test_linux_install_dir_cleanup_removes_created_xdg_parents() {
+  (
+    prepare_systemd_case || return 1
+    /bin/rm -rf -- "$DSH_SERVICE_ROOT" "$HOME/.local"
+    prepare_install_lock_root || return 1
+    assert_eq 1 "$INSTALL_CREATED_ROOT_GRANDPARENT" || return 1
+    assert_eq 1 "$INSTALL_CREATED_ROOT_PARENT" || return 1
+    cleanup_install_directories
+    [ ! -e "$HOME/.local" ]
+  )
+}
+
+test_linux_custom_xdg_data_home_must_exist() {
+  (
+    prepare_systemd_case || return 1
+    export XDG_DATA_HOME="$TEST_ROOT/no-such-xdg"
+    init_paths || return 1
+    prepare_install_lock_root 2>/dev/null && return 1
+    return 0
+  )
+}
+
+test_linger_warning_only_when_disabled() {
+  (
+    prepare_systemd_case || return 1
+    write_fake loginctl 'printf "%s\n" "${DSH_TEST_LINGER_STATE:-yes}"'
+    export DSH_SERVICE_LOGINCTL_BIN="$TEST_ROOT/bin/loginctl"
+    init_command_paths || return 1
+    warn_output=$(warn_if_no_linger 2>&1) || return 1
+    assert_eq '' "$warn_output" || return 1
+    export DSH_TEST_LINGER_STATE=no
+    warn_output=$(warn_if_no_linger 2>&1) || return 1
+    printf '%s\n' "$warn_output" | /usr/bin/grep -F 'enable-linger' >/dev/null
+  )
+}
+
+run_test 'linux status prints Systemd label' test_linux_status_prints_systemd_label
+run_test 'linux open uses xdg-open when available' test_linux_open_uses_xdg_open_when_available
+run_test 'linux open degrades without xdg-open' test_linux_open_degrades_without_xdg_open
+run_test 'linux open degrades when xdg-open fails' test_linux_open_degrades_when_xdg_open_fails
+run_test 'linux uninstall disables and removes the unit' test_linux_uninstall_disables_and_removes_unit
+run_test 'linux uninstall rejects a wrong root' test_linux_uninstall_rejects_wrong_root
+run_test 'linux install cleanup removes created xdg parents' test_linux_install_dir_cleanup_removes_created_xdg_parents
+run_test 'custom XDG_DATA_HOME must already exist' test_linux_custom_xdg_data_home_must_exist
+run_test 'linger warning appears only when disabled' test_linger_warning_only_when_disabled
 run_test 'linux start enables an unloaded service' test_linux_start_enables_unloaded_service
 run_test 'linux restart uses systemctl restart with new pid' test_linux_restart_uses_systemctl_restart_with_new_pid
 run_test 'linux stop keeps the unit file' test_linux_stop_keeps_unit_file
