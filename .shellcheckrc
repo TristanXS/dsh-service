@@ -1,0 +1,6 @@
+# SC2015 (A && B || C): the guard-then-die idiom used throughout this codebase;
+# every B is a side-effect-free test, so the caveat does not apply.
+# SC2317 (unreachable command): older ShellCheck (0.9.x on Ubuntu) flags test
+# functions invoked indirectly through run_test; newer versions call this
+# SC2329, which the test suites already disable inline.
+disable=SC2015,SC2317
