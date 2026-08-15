@@ -333,6 +333,55 @@ service_pid() {
 }
 
 listener_records() {
+  case "$PLATFORM" in
+    darwin) listener_records_lsof "$@" ;;
+    linux) listener_records_ss "$@" ;;
+    *) return 1 ;;
+  esac
+}
+
+listener_records_ss() {
+  [ "$#" -le 1 ] || return 1
+  local listener_scope ss_output ss_status ss_line local_addr process_field rest
+  local pid_extract_pattern emitted_for_line
+  listener_scope=${1:-loopback}
+  case "$listener_scope" in
+    all|loopback) ;;
+    *) return 1 ;;
+  esac
+  ss_output=$("$SS_BIN" -H -tlnp 2>&1)
+  ss_status=$?
+  [ "$ss_status" -eq 0 ] || return 1
+  [ -n "$ss_output" ] || return 0
+
+  pid_extract_pattern='pid=([0-9]+)(.*)$'
+  while IFS= read -r ss_line || [ -n "$ss_line" ]; do
+    [ -n "$ss_line" ] || continue
+    # ss -H -tlnp columns: State Recv-Q Send-Q Local:Port Peer:Port [Process]
+    read -r _ _ _ local_addr _ process_field <<EOF2
+$ss_line
+EOF2
+    case "$local_addr" in
+      *:3080) ;;
+      *) continue ;;
+    esac
+    if [ "$listener_scope" = loopback ] && [ "$local_addr" != 127.0.0.1:3080 ]; then
+      continue
+    fi
+    emitted_for_line=0
+    rest=${process_field:-}
+    while [[ "$rest" =~ $pid_extract_pattern ]]; do
+      printf '%s|%s\n' "${BASH_REMATCH[1]}" "$local_addr"
+      emitted_for_line=1
+      rest=${BASH_REMATCH[2]}
+    done
+    if [ "$emitted_for_line" -eq 0 ]; then
+      printf '%s|%s\n' unknown "$local_addr"
+    fi
+  done <<<"$ss_output"
+}
+
+listener_records_lsof() {
   [ "$#" -le 1 ] || return 1
   local listener_scope selector lsof_output lsof_status field_line current_pid
   listener_scope=${1:-loopback}

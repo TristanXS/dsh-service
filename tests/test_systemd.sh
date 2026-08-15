@@ -288,6 +288,66 @@ test_service_loaded_tracks_is_active() {
   )
 }
 
+test_linux_health_matrix() {
+  (
+    prepare_systemd_case || return 1
+    assert_health unloaded || return 1
+    set_job 1 ''
+    assert_health starting || return 1
+    set_job 1 555
+    set_listeners
+    assert_health starting || return 1
+    set_listeners '555|127.0.0.1:3080'
+    assert_health unhealthy || return 1
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    assert_health healthy || return 1
+    set_listeners '556|127.0.0.1:3080'
+    assert_health conflict || return 1
+    set_listeners '555|0.0.0.0:3080'
+    assert_health conflict || return 1
+    set_listeners '555|[::]:3080'
+    assert_health conflict || return 1
+    set_listeners 'unknown|127.0.0.1:3080'
+    assert_health conflict
+  )
+}
+
+test_linux_health_fails_closed_on_ss_error() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 555
+    set_listeners '555|127.0.0.1:3080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    export DSH_TEST_SS_FAIL=1
+    assert_health conflict
+  )
+}
+
+test_ss_multi_pid_socket_yields_conflict() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 555
+    printf 'LISTEN 0 4096 127.0.0.1:3080 0.0.0.0:* users:(("node",pid=555,fd=18),("node",pid=556,fd=18))\n' >"$HOME/raw-ss"
+    export DSH_TEST_SS_RAW_FILE="$HOME/raw-ss"
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    assert_health conflict
+  )
+}
+
+test_ss_ignores_other_ports() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 555
+    set_listeners '555|127.0.0.1:3080' '700|127.0.0.1:30801' '701|127.0.0.1:8080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    assert_health healthy
+  )
+}
+
+run_test 'linux health matrix covers all states' test_linux_health_matrix
+run_test 'linux health fails closed on ss error' test_linux_health_fails_closed_on_ss_error
+run_test 'multi-pid socket is a conflict' test_ss_multi_pid_socket_yields_conflict
+run_test 'ss probe ignores other ports' test_ss_ignores_other_ports
 run_test 'service_pid parses MainPID strictly' test_service_pid_parses_mainpid_strictly
 run_test 'service_loaded tracks is-active' test_service_loaded_tracks_is_active
 run_test 'unit renders expected template with escaping' test_unit_renders_expected_template_and_escapes
