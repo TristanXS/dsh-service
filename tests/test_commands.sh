@@ -273,7 +273,7 @@ test_help_and_version_are_read_only() {
 
   run_cli version
   assert_eq 0 "$CLI_STATUS" || return 1
-  assert_eq '0.1.0' "$CLI_OUTPUT" || return 1
+  assert_eq '0.2.0' "$CLI_OUTPUT" || return 1
 
   after=$(home_inventory) || return 1
   assert_eq "$before" "$after"
@@ -286,7 +286,7 @@ test_status_prints_all_public_fields() {
   run_cli status
 
   assert_eq 0 "$CLI_STATUS" || return 1
-  assert_line "$CLI_OUTPUT" 'Manager version: 0.1.0' || return 1
+  assert_line "$CLI_OUTPUT" 'Manager version: 0.2.0' || return 1
   assert_line "$CLI_OUTPUT" 'DSH version: 1.2.3' || return 1
   assert_line "$CLI_OUTPUT" 'Launchd: loaded' || return 1
   assert_line "$CLI_OUTPUT" 'PID: 4242' || return 1

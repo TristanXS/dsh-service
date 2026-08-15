@@ -509,7 +509,7 @@ test_version_command_prints_manager_version() {
   actual=$(DSH_SERVICE_SOURCE_ONLY=0 /bin/bash "$CLI_PATH" version 2>&1)
   status=$?
   assert_eq 0 "$status" || return 1
-  assert_eq '0.1.0' "$actual"
+  assert_eq '0.2.0' "$actual"
 }
 
 test_unknown_command_fails() {
