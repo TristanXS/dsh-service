@@ -286,10 +286,14 @@ ensure_service_definition() {
 
 service_loaded() {
   [ "$#" -eq 0 ] || return 1
-  "$LAUNCHCTL_BIN" print "$SERVICE_TARGET" >/dev/null 2>&1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" print "$SERVICE_TARGET" >/dev/null 2>&1 ;;
+    linux) "$SYSTEMCTL_BIN" --user is-active --quiet "$SERVICE_TARGET" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
 }
 
-launchd_pid() {
+launchd_print_pid() {
   [ "$#" -eq 0 ] || return 1
   local print_output print_line parsed_pid pid_count pid_pattern
   print_output=$("$LAUNCHCTL_BIN" print "$SERVICE_TARGET" 2>/dev/null) || return 1
@@ -307,6 +311,25 @@ launchd_pid() {
     ''|0|*[!0-9]*) return 1 ;;
   esac
   printf '%s\n' "$parsed_pid"
+}
+
+systemd_main_pid() {
+  [ "$#" -eq 0 ] || return 1
+  local main_pid
+  main_pid=$("$SYSTEMCTL_BIN" --user show -p MainPID --value "$SERVICE_TARGET" 2>/dev/null) || return 1
+  case "$main_pid" in
+    ''|0|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$main_pid"
+}
+
+service_pid() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) launchd_print_pid ;;
+    linux) systemd_main_pid ;;
+    *) return 1 ;;
+  esac
 }
 
 listener_records() {
@@ -398,12 +421,12 @@ pid_is_listening() {
 
 health_state() {
   [ "$#" -eq 0 ] || return 1
-  local loaded_state service_pid conflict_status loopback_pids loopback_pid loopback_count
+  local loaded_state supervisor_pid conflict_status loopback_pids loopback_pid loopback_count
   loaded_state=0
   service_loaded && loaded_state=1
-  service_pid=$(launchd_pid 2>/dev/null) || service_pid=
+  supervisor_pid=$(service_pid 2>/dev/null) || supervisor_pid=
 
-  listener_conflict "$service_pid"
+  listener_conflict "$supervisor_pid"
   conflict_status=$?
   if [ "$conflict_status" -ne 1 ]; then
     printf 'conflict\n'
@@ -413,7 +436,7 @@ health_state() {
     printf 'unloaded\n'
     return 1
   fi
-  if [ -z "$service_pid" ]; then
+  if [ -z "$supervisor_pid" ]; then
     printf 'starting\n'
     return 1
   fi
@@ -433,7 +456,7 @@ health_state() {
     loopback_pid=$loopback_pid_line
     loopback_count=$((loopback_count + 1))
   done <<<"$loopback_pids"
-  if [ "$loopback_count" -ne 1 ] || [ "$loopback_pid" != "$service_pid" ]; then
+  if [ "$loopback_count" -ne 1 ] || [ "$loopback_pid" != "$supervisor_pid" ]; then
     printf 'conflict\n'
     return 1
   fi
@@ -498,7 +521,7 @@ wait_for_restarted_health() {
   old_pid=$1
   wait_attempt=0
   while [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; do
-    new_pid=$(launchd_pid 2>/dev/null) || new_pid=
+    new_pid=$(service_pid 2>/dev/null) || new_pid=
     if [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] &&
       ! pid_is_listening "$old_pid" && health_state >/dev/null; then
       return 0
@@ -542,7 +565,7 @@ start_service() {
       bootstrap_service
       ;;
     starting)
-      current_pid=$(launchd_pid 2>/dev/null) || current_pid=
+      current_pid=$(service_pid 2>/dev/null) || current_pid=
       if [ -z "$current_pid" ]; then
         listener_conflict ''
         case "$?" in
@@ -578,7 +601,7 @@ stop_service() {
   [ "$#" -eq 0 ] || return 1
   local old_pid
   service_loaded || return 0
-  old_pid=$(launchd_pid 2>/dev/null) || old_pid=
+  old_pid=$(service_pid 2>/dev/null) || old_pid=
   "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
     die 'could not boot out LaunchAgent'
     return 1
@@ -605,7 +628,7 @@ restart_service() {
     return $?
   }
 
-  old_pid=$(launchd_pid 2>/dev/null) || old_pid=
+  old_pid=$(service_pid 2>/dev/null) || old_pid=
   if [ -n "$old_pid" ]; then
     listener_conflict "$old_pid"
     case "$?" in
@@ -2399,7 +2422,7 @@ cmd_status() {
   status_pid='-'
   if service_loaded; then
     status_launchd=loaded
-    status_pid=$(launchd_pid 2>/dev/null) || status_pid='-'
+    status_pid=$(service_pid 2>/dev/null) || status_pid='-'
   fi
 
   status_code=0

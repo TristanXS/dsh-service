@@ -262,6 +262,34 @@ run_test 'linux paths honor XDG overrides' test_linux_paths_honor_xdg_overrides
 run_test 'forced darwin platform keeps macOS paths' test_darwin_paths_unchanged_under_forced_platform
 run_test 'unsupported platform fails closed' test_unsupported_platform_fails_closed
 run_test 'linux preflight requires systemctl and drops plutil' test_linux_preflight_requires_systemctl_not_plutil
+test_service_pid_parses_mainpid_strictly() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 4321
+    assert_eq 4321 "$(service_pid)" || return 1
+    set_job 1 0
+    service_pid 2>/dev/null && return 1
+    set_job 1 ''
+    service_pid 2>/dev/null && return 1
+    printf 'garbage\n' >"$DSH_TEST_PID_FILE"
+    service_pid 2>/dev/null && return 1
+    return 0
+  )
+}
+
+test_service_loaded_tracks_is_active() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 4321
+    service_loaded || return 1
+    set_job 0 ''
+    service_loaded && return 1
+    return 0
+  )
+}
+
+run_test 'service_pid parses MainPID strictly' test_service_pid_parses_mainpid_strictly
+run_test 'service_loaded tracks is-active' test_service_loaded_tracks_is_active
 run_test 'unit renders expected template with escaping' test_unit_renders_expected_template_and_escapes
 run_test 'ensure_unit publishes 0644 and reloads systemd' test_ensure_unit_publishes_0644_and_reloads
 run_test 'ensure_unit fails closed on reload failure' test_ensure_unit_failed_reload_fails_closed

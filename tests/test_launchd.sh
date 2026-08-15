@@ -388,14 +388,14 @@ exit 1'
   done
 )
 
-test_launchd_pid_accepts_only_valid_successful_print_line() (
+test_service_pid_accepts_only_valid_successful_print_line() (
   prepare_launchd_case pid-strict || return 1
   set_job 1 4321
   printf 'decoys\n' >"$DSH_TEST_PRINT_MODE_FILE"
-  assert_eq 4321 "$(launchd_pid)" || return 1
+  assert_eq 4321 "$(service_pid)" || return 1
 
   printf 'fail-with-pid\n' >"$DSH_TEST_PRINT_MODE_FILE"
-  failed_output=$(launchd_pid)
+  failed_output=$(service_pid)
   failed_status=$?
   assert_eq 1 "$failed_status" || return 1
   assert_eq '' "$failed_output"
@@ -517,7 +517,7 @@ test_restart_uses_graceful_launchctl_signal_and_new_identity() (
 
   restart_service || return 1
   assert_log_has_line "kill|SIGTERM|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
-  assert_eq 204 "$(launchd_pid)" || return 1
+  assert_eq 204 "$(service_pid)" || return 1
   assert_eq '' "$(<"$shell_kill_log")" || return 1
   assert_health healthy 0 || return 1
   assert_no_kickstart_k "$DSH_TEST_LAUNCHCTL_LOG"
@@ -533,7 +533,7 @@ test_start_restarts_its_unhealthy_owned_listener_gracefully() (
 
   start_service || return 1
   assert_log_has_line "kill|SIGTERM|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
-  assert_eq 205 "$(launchd_pid)" || return 1
+  assert_eq 205 "$(service_pid)" || return 1
   assert_health healthy 0
 )
 
@@ -551,7 +551,7 @@ test_restart_falls_back_once_to_bootout_and_bootstrap() (
   assert_log_has_line "kill|SIGTERM|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
   assert_log_has_line "bootout|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
   assert_log_has_line "bootstrap|gui/$uid|$SERVICE_DEFINITION_PATH" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
-  assert_eq 206 "$(launchd_pid)" || return 1
+  assert_eq 206 "$(service_pid)" || return 1
   assert_health healthy 0 || return 1
   assert_no_kickstart_k "$DSH_TEST_LAUNCHCTL_LOG"
 )
@@ -664,7 +664,7 @@ test_restart_lsof_diagnostic_preserves_existing_plist() (
 
 run_test 'plist is valid and preserves XML-sensitive paths' test_plist_is_valid_and_preserves_special_paths
 run_test 'failed plist lint preserves the published plist' test_failed_plist_lint_preserves_published_file
-run_test 'launchd PID parsing requires a valid successful print line' test_launchd_pid_accepts_only_valid_successful_print_line
+run_test 'launchd PID parsing requires a valid successful print line' test_service_pid_accepts_only_valid_successful_print_line
 run_test 'matching job, listener, and HTTP are healthy without body output' test_health_is_healthy_only_for_matching_identity_and_http
 run_test 'different listener identity is a conflict' test_health_reports_conflict_for_different_listener_pid
 run_test 'IPv4 and IPv6 wildcard listeners are conflicts' test_health_reports_conflict_for_every_wildcard_listener
