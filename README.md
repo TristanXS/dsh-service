@@ -39,6 +39,7 @@ macOS needs no additional tools. Linux additionally needs:
 
 - systemd with a working user session (`systemctl --user` must reach the user manager)
 - `ss` from iproute2 (standard on mainstream distributions)
+- a C/C++ toolchain and `python3` for npm native modules (on Debian and Ubuntu: `build-essential` and `python3`)
 - `xdg-open` is optional; without it, `dsh-service open` prints the URL instead of opening a browser
 
 Windows support is planned, not available. Homebrew is not a product dependency; this repository uses it only to install ShellCheck on the continuous integration (CI) runner.
@@ -187,7 +188,9 @@ The service listens only on the Internet Protocol version 4 (IPv4) loopback addr
 
 ## Tested status and compatibility limits
 
-The backends are a per-user macOS LaunchAgent and a Linux systemd user unit. Automated Bash syntax checks and isolated tests run on both macOS and Ubuntu. The macOS guarded live smoke completed on macOS 26.5.2 (build 25F84), arm64, with DSH `0.1.0-rc.6`. It verified install, status, restart, same-version update, stop, start, and uninstall. It also verified removal of every manager-owned path and preservation of the existing `~/.dsh` directory.
+The backends are a per-user macOS LaunchAgent and a Linux systemd user unit. Automated Bash syntax checks and isolated tests run on both macOS and Ubuntu. The macOS guarded live smoke completed on macOS 26.5.2 (build 25F84), arm64, with DSH `0.1.0-rc.6`. The Linux guarded live smoke completed on Ubuntu 24.04 (arm64, systemd 255, OrbStack virtual machine) with the same DSH release. Both verified install, status, restart, same-version update, stop, start, and uninstall, plus removal of every manager-owned path and preservation of the existing `~/.dsh` directory. The Linux smoke additionally verified boot-time start with lingering enabled and transactional rollback of a failed install.
+
+On Linux, installing `@deepseek-ai/dsh` compiles native modules (`node-pty`), so `npm` needs a C/C++ toolchain such as the `build-essential` package and `python3`.
 
 This evidence is not a general compatibility guarantee. Compatibility across alpha releases is not guaranteed. Migration or clean-reinstall instructions will be documented when required.
 

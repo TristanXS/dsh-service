@@ -39,6 +39,7 @@ macOS 无需额外工具。Linux 还需要：
 
 - systemd 且用户会话可用（`systemctl --user` 能连接到用户管理器）
 - iproute2 提供的 `ss`（主流发行版标配）
+- npm 原生模块所需的 C/C++ 工具链和 `python3`（Debian/Ubuntu 上为 `build-essential` 与 `python3`）
 - `xdg-open` 可选；缺失时 `dsh-service open` 会打印 URL 而不是打开浏览器
 
 Windows 支持处于计划中，尚不可用。Homebrew 不是产品依赖；此仓库仅在持续集成（CI）运行器上用它安装 ShellCheck。
@@ -187,7 +188,9 @@ DSH 可以使用你的用户权限执行代码和 shell 命令。请仅将它用
 
 ## 已测试状态与兼容性限制
 
-后端为 macOS 用户级 LaunchAgent 和 Linux systemd user unit。自动化 Bash 语法检查和隔离测试在 macOS 与 Ubuntu 上运行。macOS 受控真实冒烟测试在 macOS 26.5.2（build 25F84）、arm64 上以 DSH `0.1.0-rc.6` 完成。它验证了安装、状态、重启、同版本更新、停止、启动和卸载，也验证了移除全部管理器拥有的路径以及保留现有 `~/.dsh` 目录。
+后端为 macOS 用户级 LaunchAgent 和 Linux systemd user unit。自动化 Bash 语法检查和隔离测试在 macOS 与 Ubuntu 上运行。macOS 受控真实冒烟测试在 macOS 26.5.2（build 25F84）、arm64 上以 DSH `0.1.0-rc.6` 完成。Linux 受控真实冒烟测试在 Ubuntu 24.04（arm64、systemd 255、OrbStack 虚拟机）上以相同 DSH 版本完成。两者都验证了安装、状态、重启、同版本更新、停止、启动和卸载，以及移除全部管理器拥有的路径和保留现有 `~/.dsh` 目录。Linux 冒烟额外验证了 lingering 开启时的开机自启和失败安装的事务回滚。
+
+在 Linux 上安装 `@deepseek-ai/dsh` 需要编译原生模块（`node-pty`），因此 `npm` 需要 C/C++ 工具链（如 `build-essential` 软件包）和 `python3`。
 
 这些证据不构成通用兼容性保证。Alpha 版本之间不保证兼容；需要时会提供迁移或全新重装说明。
 
