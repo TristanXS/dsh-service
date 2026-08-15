@@ -583,16 +583,50 @@ wait_for_restarted_health() {
   return 1
 }
 
+supervisor_load() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" bootstrap "${SERVICE_TARGET%/*}" "$SERVICE_DEFINITION_PATH" ;;
+    linux) "$SYSTEMCTL_BIN" --user enable --now "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_kickstart() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" kickstart "$SERVICE_TARGET" ;;
+    linux) "$SYSTEMCTL_BIN" --user restart "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_graceful_restart() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" kill SIGTERM "$SERVICE_TARGET" ;;
+    linux) "$SYSTEMCTL_BIN" --user restart "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_unload() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" ;;
+    linux) "$SYSTEMCTL_BIN" --user stop "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
 bootstrap_service() {
   [ "$#" -eq 0 ] || return 1
-  local service_domain
-  service_domain=${SERVICE_TARGET%/*}
-  "$LAUNCHCTL_BIN" bootstrap "$service_domain" "$SERVICE_DEFINITION_PATH" || {
-    die 'could not bootstrap LaunchAgent'
+  supervisor_load || {
+    die 'could not load the service'
     return 1
   }
   wait_for_health || {
-    die 'LaunchAgent did not become healthy'
+    die 'the service did not become healthy'
     return 1
   }
 }
@@ -624,12 +658,12 @@ start_service() {
             return 1
             ;;
         esac
-        "$LAUNCHCTL_BIN" kickstart "$SERVICE_TARGET" || {
-          die 'could not kickstart LaunchAgent'
+        supervisor_kickstart || {
+          die 'could not kickstart the service'
           return 1
         }
         wait_for_health || {
-          die 'LaunchAgent did not become healthy'
+          die 'the service did not become healthy'
           return 1
         }
       elif wait_for_health; then
@@ -651,12 +685,12 @@ stop_service() {
   local old_pid
   service_loaded || return 0
   old_pid=$(service_pid 2>/dev/null) || old_pid=
-  "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
-    die 'could not boot out LaunchAgent'
+  supervisor_unload || {
+    die 'could not unload the service'
     return 1
   }
   wait_for_service_absence "$old_pid" || {
-    die 'LaunchAgent did not stop cleanly'
+    die 'the service did not stop cleanly'
     return 1
   }
 }
@@ -687,18 +721,18 @@ restart_service() {
         return 1
         ;;
     esac
-    if "$LAUNCHCTL_BIN" kill SIGTERM "$SERVICE_TARGET" &&
+    if supervisor_graceful_restart &&
       wait_for_restarted_health "$old_pid"; then
       return 0
     fi
   fi
 
-  "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
-    die 'could not boot out LaunchAgent during restart'
+  supervisor_unload || {
+    die 'could not unload the service during restart'
     return 1
   }
   wait_for_service_absence "$old_pid" || {
-    die 'old LaunchAgent instance did not stop'
+    die 'the old service instance did not stop'
     return 1
   }
   bootstrap_service

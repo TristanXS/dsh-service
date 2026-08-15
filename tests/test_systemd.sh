@@ -344,6 +344,70 @@ test_ss_ignores_other_ports() {
   )
 }
 
+test_linux_start_enables_unloaded_service() {
+  (
+    prepare_systemd_case || return 1
+    export DSH_TEST_HEALTH_AFTER_TRANSITION=1
+    start_service || return 1
+    assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|enable|--now|dsh-service.service' || return 1
+    assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|daemon-reload'
+  )
+}
+
+test_linux_restart_uses_systemctl_restart_with_new_pid() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 300
+    set_listeners '300|127.0.0.1:3080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    export DSH_TEST_NEXT_PID=301 DSH_TEST_HEALTH_AFTER_TRANSITION=1
+    restart_service || return 1
+    assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|restart|dsh-service.service' || return 1
+    assert_eq 301 "$(service_pid)"
+  )
+}
+
+test_linux_stop_keeps_unit_file() {
+  (
+    prepare_systemd_case || return 1
+    export DSH_TEST_HEALTH_AFTER_TRANSITION=1
+    start_service || return 1
+    stop_service || return 1
+    assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|stop|dsh-service.service' || return 1
+    [ -f "$SERVICE_DEFINITION_PATH" ] || return 1
+    assert_health unloaded
+  )
+}
+
+test_linux_start_refuses_foreign_listener_without_mutation() {
+  (
+    prepare_systemd_case || return 1
+    set_listeners '9999|127.0.0.1:3080'
+    start_service 2>/dev/null && return 1
+    /usr/bin/grep -E 'enable|restart|stop' "$DSH_TEST_SYSTEMCTL_LOG" >/dev/null && return 1
+    [ ! -e "$SERVICE_DEFINITION_PATH" ]
+  )
+}
+
+test_linux_restart_falls_back_to_stop_and_enable() {
+  (
+    prepare_systemd_case || return 1
+    set_job 1 300
+    set_listeners '300|127.0.0.1:3080'
+    printf '1\n' >"$DSH_TEST_CURL_OK_FILE"
+    export DSH_TEST_RESTART_FAIL=1 DSH_TEST_NEXT_PID=302 DSH_TEST_HEALTH_AFTER_TRANSITION=1
+    restart_service || return 1
+    assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|stop|dsh-service.service' || return 1
+    assert_log_has_line "$DSH_TEST_SYSTEMCTL_LOG" '--user|enable|--now|dsh-service.service' || return 1
+    assert_eq 302 "$(service_pid)"
+  )
+}
+
+run_test 'linux start enables an unloaded service' test_linux_start_enables_unloaded_service
+run_test 'linux restart uses systemctl restart with new pid' test_linux_restart_uses_systemctl_restart_with_new_pid
+run_test 'linux stop keeps the unit file' test_linux_stop_keeps_unit_file
+run_test 'linux start refuses a foreign listener without mutation' test_linux_start_refuses_foreign_listener_without_mutation
+run_test 'linux restart falls back to stop and enable' test_linux_restart_falls_back_to_stop_and_enable
 run_test 'linux health matrix covers all states' test_linux_health_matrix
 run_test 'linux health fails closed on ss error' test_linux_health_fails_closed_on_ss_error
 run_test 'multi-pid socket is a conflict' test_ss_multi_pid_socket_yields_conflict
