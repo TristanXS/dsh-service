@@ -200,6 +200,90 @@ ensure_plist() {
   fi
 }
 
+unit_escape() {
+  [ "$#" -eq 1 ] || return 1
+  local escaped_value=$1
+  escaped_value=${escaped_value//%/%%}
+  printf '%s' "$escaped_value"
+}
+
+unit_escape_exec_arg() {
+  [ "$#" -eq 1 ] || return 1
+  local escaped_value=$1
+  escaped_value=${escaped_value//\\/\\\\}
+  escaped_value=${escaped_value//\"/\\\"}
+  escaped_value=${escaped_value//%/%%}
+  printf '%s' "$escaped_value"
+}
+
+render_unit() {
+  [ "$#" -eq 0 ] || return 1
+  local run_exec workdir home_env stdout_path stderr_path
+  run_exec=$(unit_escape_exec_arg "$CURRENT_LINK/run") || return 1
+  workdir=$(unit_escape "$WORKSPACE_DIR") || return 1
+  home_env=$(unit_escape_exec_arg "$HOME") || return 1
+  stdout_path=$(unit_escape "$LOG_DIR/stdout.log") || return 1
+  stderr_path=$(unit_escape "$LOG_DIR/stderr.log") || return 1
+  printf '%s\n' '[Unit]'
+  printf '%s\n' 'Description=DeepSeek Harness Web UI service'
+  printf '%s\n' ''
+  printf '%s\n' '[Service]'
+  printf '%s\n' 'Type=simple'
+  printf 'ExecStart=/bin/bash "%s"\n' "$run_exec"
+  printf 'WorkingDirectory=%s\n' "$workdir"
+  printf 'Environment="HOME=%s"\n' "$home_env"
+  printf '%s\n' 'Restart=on-failure'
+  printf '%s\n' 'RestartSec=10'
+  printf '%s\n' 'TimeoutStopSec=15'
+  printf 'StandardOutput=append:%s\n' "$stdout_path"
+  printf 'StandardError=append:%s\n' "$stderr_path"
+  printf '%s\n' ''
+  printf '%s\n' '[Install]'
+  printf '%s\n' 'WantedBy=default.target'
+}
+
+ensure_unit() {
+  [ "$#" -eq 0 ] || return 1
+  local unit_dir unit_tmp unit_serial
+  unit_dir=${SERVICE_DEFINITION_PATH%/*}
+  /bin/mkdir -p "$unit_dir" "$LOG_DIR" "$WORKSPACE_DIR" || {
+    die 'could not create service directories'
+    return 1
+  }
+  unit_serial=$$
+  unit_tmp="$unit_dir/.${SERVICE_DEFINITION_PATH##*/}.$unit_serial"
+  while [ -e "$unit_tmp" ] || [ -L "$unit_tmp" ]; do
+    unit_serial=$((unit_serial + 1))
+    unit_tmp="$unit_dir/.${SERVICE_DEFINITION_PATH##*/}.$unit_serial"
+  done
+  if ! (
+    umask 077
+    render_unit >"$unit_tmp"
+  ); then
+    /bin/rm -f -- "$unit_tmp"
+    die 'could not render systemd unit'
+    return 1
+  fi
+  if ! /bin/chmod 0644 "$unit_tmp" || ! /bin/mv -f "$unit_tmp" "$SERVICE_DEFINITION_PATH"; then
+    /bin/rm -f -- "$unit_tmp"
+    die 'could not publish systemd unit'
+    return 1
+  fi
+  "$SYSTEMCTL_BIN" --user daemon-reload || {
+    die 'could not reload systemd user units'
+    return 1
+  }
+}
+
+ensure_service_definition() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) ensure_plist ;;
+    linux) ensure_unit ;;
+    *) return 1 ;;
+  esac
+}
+
 service_loaded() {
   [ "$#" -eq 0 ] || return 1
   "$LAUNCHCTL_BIN" print "$SERVICE_TARGET" >/dev/null 2>&1
@@ -451,7 +535,7 @@ start_service() {
       return 1
       ;;
   esac
-  ensure_plist || return 1
+  ensure_service_definition || return 1
   case "$current_health" in
     healthy) return 0 ;;
     unloaded)
@@ -515,7 +599,7 @@ restart_service() {
       return 1
       ;;
   esac
-  ensure_plist || return 1
+  ensure_service_definition || return 1
   [ "$restart_health" != unloaded ] || {
     bootstrap_service
     return $?
@@ -2264,7 +2348,7 @@ cmd_install() {
     stage_release || install_status=1
   fi
   if [ "$install_status" -eq 0 ]; then
-    ensure_plist || install_status=1
+    ensure_service_definition || install_status=1
   fi
   if [ "$install_status" -eq 0 ]; then
     staged_release=$STAGED_RELEASE_ID
