@@ -2,7 +2,7 @@
 # shellcheck disable=SC2016,SC2034,SC2119,SC2120,SC2317
 set -u
 
-MANAGER_VERSION=0.1.0
+MANAGER_VERSION=0.2.0
 MANAGER_SCRIPT_PATH=${BASH_SOURCE[0]}
 
 die() {
@@ -14,31 +14,95 @@ note() {
   printf 'dsh-service: %s\n' "$*" >&2
 }
 
+detect_platform() {
+  [ "$#" -eq 0 ] || return 1
+  PLATFORM=
+  if [ "${DSH_SERVICE_TESTING:-0}" = 1 ] && [ -n "${DSH_SERVICE_PLATFORM:-}" ]; then
+    PLATFORM=$DSH_SERVICE_PLATFORM
+  else
+    case "$(/usr/bin/uname -s 2>/dev/null)" in
+      Darwin) PLATFORM=darwin ;;
+      Linux) PLATFORM=linux ;;
+    esac
+  fi
+  case "$PLATFORM" in
+    darwin|linux) ;;
+    *)
+      die 'unsupported platform'
+      return 1
+      ;;
+  esac
+}
+
 init_command_paths() {
-  LAUNCHCTL_BIN=/bin/launchctl
-  PLUTIL_BIN=/usr/bin/plutil
-  LSOF_BIN=/usr/sbin/lsof
   CURL_BIN=/usr/bin/curl
-  OPEN_BIN=/usr/bin/open
   TAIL_BIN=/usr/bin/tail
   WAIT_ATTEMPTS=30
   WAIT_INTERVAL=1
   WAIT_TIMEOUT_SECONDS=30
+  case "$PLATFORM" in
+    darwin)
+      LAUNCHCTL_BIN=/bin/launchctl
+      PLUTIL_BIN=/usr/bin/plutil
+      LSOF_BIN=/usr/sbin/lsof
+      OPEN_BIN=/usr/bin/open
+      ;;
+    linux)
+      SYSTEMCTL_BIN=/usr/bin/systemctl
+      SS_BIN=/usr/bin/ss
+      LOGINCTL_BIN=/usr/bin/loginctl
+      ;;
+  esac
   if [ "${DSH_SERVICE_TESTING:-0}" = 1 ]; then
-    LAUNCHCTL_BIN="${DSH_SERVICE_LAUNCHCTL_BIN:-$LAUNCHCTL_BIN}"
-    PLUTIL_BIN="${DSH_SERVICE_PLUTIL_BIN:-$PLUTIL_BIN}"
-    LSOF_BIN="${DSH_SERVICE_LSOF_BIN:-$LSOF_BIN}"
     CURL_BIN="${DSH_SERVICE_CURL_BIN:-$CURL_BIN}"
-    OPEN_BIN="${DSH_SERVICE_OPEN_BIN:-$OPEN_BIN}"
     TAIL_BIN="${DSH_SERVICE_TAIL_BIN:-$TAIL_BIN}"
     WAIT_ATTEMPTS="${DSH_SERVICE_WAIT_ATTEMPTS:-3}"
     WAIT_INTERVAL="${DSH_SERVICE_WAIT_INTERVAL:-0}"
     WAIT_TIMEOUT_SECONDS="${DSH_SERVICE_WAIT_TIMEOUT_SECONDS:-30}"
+    case "$PLATFORM" in
+      darwin)
+        LAUNCHCTL_BIN="${DSH_SERVICE_LAUNCHCTL_BIN:-$LAUNCHCTL_BIN}"
+        PLUTIL_BIN="${DSH_SERVICE_PLUTIL_BIN:-$PLUTIL_BIN}"
+        LSOF_BIN="${DSH_SERVICE_LSOF_BIN:-$LSOF_BIN}"
+        OPEN_BIN="${DSH_SERVICE_OPEN_BIN:-$OPEN_BIN}"
+        ;;
+      linux)
+        SYSTEMCTL_BIN="${DSH_SERVICE_SYSTEMCTL_BIN:-$SYSTEMCTL_BIN}"
+        SS_BIN="${DSH_SERVICE_SS_BIN:-$SS_BIN}"
+        LOGINCTL_BIN="${DSH_SERVICE_LOGINCTL_BIN:-$LOGINCTL_BIN}"
+        ;;
+    esac
   fi
+  case "$PLATFORM" in
+    darwin) LISTENER_BIN=$LSOF_BIN ;;
+    linux) LISTENER_BIN=$SS_BIN ;;
+  esac
 }
 
 init_paths() {
-  DSH_SERVICE_ROOT="$HOME/Library/Application Support/dsh-service"
+  case "$PLATFORM" in
+    darwin)
+      DSH_SERVICE_ROOT="$HOME/Library/Application Support/dsh-service"
+      SERVICE_DEFINITION_PATH="$HOME/Library/LaunchAgents/dev.dsh-service.web.plist"
+      LOG_DIR="$HOME/Library/Logs/dsh-service"
+      SERVICE_TARGET="gui/$(/usr/bin/id -u)/dev.dsh-service.web"
+      ROOT_PARENT_DIR="$HOME/Library/Application Support"
+      ROOT_GRANDPARENT_DIR="$HOME/Library"
+      ;;
+    linux)
+      DSH_SERVICE_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/dsh-service"
+      SERVICE_DEFINITION_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/dsh-service.service"
+      LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dsh-service"
+      SERVICE_TARGET=dsh-service.service
+      if [ -z "${XDG_DATA_HOME:-}" ]; then
+        ROOT_PARENT_DIR="$HOME/.local/share"
+        ROOT_GRANDPARENT_DIR="$HOME/.local"
+      else
+        ROOT_PARENT_DIR=
+        ROOT_GRANDPARENT_DIR=
+      fi
+      ;;
+  esac
   RELEASES_DIR="$DSH_SERVICE_ROOT/releases"
   CURRENT_LINK="$DSH_SERVICE_ROOT/current"
   PREVIOUS_LINK="$DSH_SERVICE_ROOT/previous"
@@ -47,9 +111,6 @@ init_paths() {
   WORKSPACE_DIR="$DSH_SERVICE_ROOT/workspace"
   RUNNER_TEMPLATE="$DSH_SERVICE_ROOT/libexec/dsh-service-run"
   CLI_DEST="$HOME/.local/bin/dsh-service"
-  PLIST_PATH="$HOME/Library/LaunchAgents/dev.dsh-service.web.plist"
-  LOG_DIR="$HOME/Library/Logs/dsh-service"
-  SERVICE_TARGET="gui/$(/usr/bin/id -u)/dev.dsh-service.web"
 }
 
 xml_escape() {
@@ -107,17 +168,17 @@ render_plist() {
 ensure_plist() {
   [ "$#" -eq 0 ] || return 1
   local plist_dir plist_tmp plist_serial
-  plist_dir=${PLIST_PATH%/*}
+  plist_dir=${SERVICE_DEFINITION_PATH%/*}
   /bin/mkdir -p "$plist_dir" "$LOG_DIR" "$WORKSPACE_DIR" || {
     die 'could not create service directories'
     return 1
   }
 
   plist_serial=$$
-  plist_tmp="$plist_dir/.${PLIST_PATH##*/}.$plist_serial"
+  plist_tmp="$plist_dir/.${SERVICE_DEFINITION_PATH##*/}.$plist_serial"
   while [ -e "$plist_tmp" ] || [ -L "$plist_tmp" ]; do
     plist_serial=$((plist_serial + 1))
-    plist_tmp="$plist_dir/.${PLIST_PATH##*/}.$plist_serial"
+    plist_tmp="$plist_dir/.${SERVICE_DEFINITION_PATH##*/}.$plist_serial"
   done
   if ! (
     umask 077
@@ -132,19 +193,107 @@ ensure_plist() {
     die 'LaunchAgent plist failed validation'
     return 1
   fi
-  if ! /bin/chmod 0644 "$plist_tmp" || ! /bin/mv -f "$plist_tmp" "$PLIST_PATH"; then
+  if ! /bin/chmod 0644 "$plist_tmp" || ! /bin/mv -f "$plist_tmp" "$SERVICE_DEFINITION_PATH"; then
     /bin/rm -f -- "$plist_tmp"
     die 'could not publish LaunchAgent plist'
     return 1
   fi
 }
 
-service_loaded() {
-  [ "$#" -eq 0 ] || return 1
-  "$LAUNCHCTL_BIN" print "$SERVICE_TARGET" >/dev/null 2>&1
+unit_escape() {
+  [ "$#" -eq 1 ] || return 1
+  local escaped_value=$1
+  escaped_value=${escaped_value//%/%%}
+  printf '%s' "$escaped_value"
 }
 
-launchd_pid() {
+unit_escape_exec_arg() {
+  [ "$#" -eq 1 ] || return 1
+  local escaped_value=$1
+  escaped_value=${escaped_value//\\/\\\\}
+  escaped_value=${escaped_value//\"/\\\"}
+  escaped_value=${escaped_value//%/%%}
+  printf '%s' "$escaped_value"
+}
+
+render_unit() {
+  [ "$#" -eq 0 ] || return 1
+  local run_exec workdir home_env stdout_path stderr_path
+  run_exec=$(unit_escape_exec_arg "$CURRENT_LINK/run") || return 1
+  workdir=$(unit_escape "$WORKSPACE_DIR") || return 1
+  home_env=$(unit_escape_exec_arg "$HOME") || return 1
+  stdout_path=$(unit_escape "$LOG_DIR/stdout.log") || return 1
+  stderr_path=$(unit_escape "$LOG_DIR/stderr.log") || return 1
+  printf '%s\n' '[Unit]'
+  printf '%s\n' 'Description=DeepSeek Harness Web UI service'
+  printf '%s\n' ''
+  printf '%s\n' '[Service]'
+  printf '%s\n' 'Type=simple'
+  printf 'ExecStart=/bin/bash "%s"\n' "$run_exec"
+  printf 'WorkingDirectory=%s\n' "$workdir"
+  printf 'Environment="HOME=%s"\n' "$home_env"
+  printf '%s\n' 'Restart=on-failure'
+  printf '%s\n' 'RestartSec=10'
+  printf '%s\n' 'TimeoutStopSec=15'
+  printf 'StandardOutput=append:%s\n' "$stdout_path"
+  printf 'StandardError=append:%s\n' "$stderr_path"
+  printf '%s\n' ''
+  printf '%s\n' '[Install]'
+  printf '%s\n' 'WantedBy=default.target'
+}
+
+ensure_unit() {
+  [ "$#" -eq 0 ] || return 1
+  local unit_dir unit_tmp unit_serial
+  unit_dir=${SERVICE_DEFINITION_PATH%/*}
+  /bin/mkdir -p "$unit_dir" "$LOG_DIR" "$WORKSPACE_DIR" || {
+    die 'could not create service directories'
+    return 1
+  }
+  unit_serial=$$
+  unit_tmp="$unit_dir/.${SERVICE_DEFINITION_PATH##*/}.$unit_serial"
+  while [ -e "$unit_tmp" ] || [ -L "$unit_tmp" ]; do
+    unit_serial=$((unit_serial + 1))
+    unit_tmp="$unit_dir/.${SERVICE_DEFINITION_PATH##*/}.$unit_serial"
+  done
+  if ! (
+    umask 077
+    render_unit >"$unit_tmp"
+  ); then
+    /bin/rm -f -- "$unit_tmp"
+    die 'could not render systemd unit'
+    return 1
+  fi
+  if ! /bin/chmod 0644 "$unit_tmp" || ! /bin/mv -f "$unit_tmp" "$SERVICE_DEFINITION_PATH"; then
+    /bin/rm -f -- "$unit_tmp"
+    die 'could not publish systemd unit'
+    return 1
+  fi
+  "$SYSTEMCTL_BIN" --user daemon-reload || {
+    die 'could not reload systemd user units'
+    return 1
+  }
+}
+
+ensure_service_definition() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) ensure_plist ;;
+    linux) ensure_unit ;;
+    *) return 1 ;;
+  esac
+}
+
+service_loaded() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" print "$SERVICE_TARGET" >/dev/null 2>&1 ;;
+    linux) "$SYSTEMCTL_BIN" --user is-active --quiet "$SERVICE_TARGET" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
+launchd_print_pid() {
   [ "$#" -eq 0 ] || return 1
   local print_output print_line parsed_pid pid_count pid_pattern
   print_output=$("$LAUNCHCTL_BIN" print "$SERVICE_TARGET" 2>/dev/null) || return 1
@@ -164,7 +313,75 @@ launchd_pid() {
   printf '%s\n' "$parsed_pid"
 }
 
+systemd_main_pid() {
+  [ "$#" -eq 0 ] || return 1
+  local main_pid
+  main_pid=$("$SYSTEMCTL_BIN" --user show -p MainPID --value "$SERVICE_TARGET" 2>/dev/null) || return 1
+  case "$main_pid" in
+    ''|0|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$main_pid"
+}
+
+service_pid() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) launchd_print_pid ;;
+    linux) systemd_main_pid ;;
+    *) return 1 ;;
+  esac
+}
+
 listener_records() {
+  case "$PLATFORM" in
+    darwin) listener_records_lsof "$@" ;;
+    linux) listener_records_ss "$@" ;;
+    *) return 1 ;;
+  esac
+}
+
+listener_records_ss() {
+  [ "$#" -le 1 ] || return 1
+  local listener_scope ss_output ss_status ss_line local_addr process_field rest
+  local pid_extract_pattern emitted_for_line
+  listener_scope=${1:-loopback}
+  case "$listener_scope" in
+    all|loopback) ;;
+    *) return 1 ;;
+  esac
+  ss_output=$("$SS_BIN" -H -tlnp 2>&1)
+  ss_status=$?
+  [ "$ss_status" -eq 0 ] || return 1
+  [ -n "$ss_output" ] || return 0
+
+  pid_extract_pattern='pid=([0-9]+)(.*)$'
+  while IFS= read -r ss_line || [ -n "$ss_line" ]; do
+    [ -n "$ss_line" ] || continue
+    # ss -H -tlnp columns: State Recv-Q Send-Q Local:Port Peer:Port [Process]
+    read -r _ _ _ local_addr _ process_field <<EOF2
+$ss_line
+EOF2
+    case "$local_addr" in
+      *:3080) ;;
+      *) continue ;;
+    esac
+    if [ "$listener_scope" = loopback ] && [ "$local_addr" != 127.0.0.1:3080 ]; then
+      continue
+    fi
+    emitted_for_line=0
+    rest=${process_field:-}
+    while [[ "$rest" =~ $pid_extract_pattern ]]; do
+      printf '%s|%s\n' "${BASH_REMATCH[1]}" "$local_addr"
+      emitted_for_line=1
+      rest=${BASH_REMATCH[2]}
+    done
+    if [ "$emitted_for_line" -eq 0 ]; then
+      printf '%s|%s\n' unknown "$local_addr"
+    fi
+  done <<<"$ss_output"
+}
+
+listener_records_lsof() {
   [ "$#" -le 1 ] || return 1
   local listener_scope selector lsof_output lsof_status field_line current_pid
   listener_scope=${1:-loopback}
@@ -253,12 +470,12 @@ pid_is_listening() {
 
 health_state() {
   [ "$#" -eq 0 ] || return 1
-  local loaded_state service_pid conflict_status loopback_pids loopback_pid loopback_count
+  local loaded_state supervisor_pid conflict_status loopback_pids loopback_pid loopback_count
   loaded_state=0
   service_loaded && loaded_state=1
-  service_pid=$(launchd_pid 2>/dev/null) || service_pid=
+  supervisor_pid=$(service_pid 2>/dev/null) || supervisor_pid=
 
-  listener_conflict "$service_pid"
+  listener_conflict "$supervisor_pid"
   conflict_status=$?
   if [ "$conflict_status" -ne 1 ]; then
     printf 'conflict\n'
@@ -268,7 +485,7 @@ health_state() {
     printf 'unloaded\n'
     return 1
   fi
-  if [ -z "$service_pid" ]; then
+  if [ -z "$supervisor_pid" ]; then
     printf 'starting\n'
     return 1
   fi
@@ -288,7 +505,7 @@ health_state() {
     loopback_pid=$loopback_pid_line
     loopback_count=$((loopback_count + 1))
   done <<<"$loopback_pids"
-  if [ "$loopback_count" -ne 1 ] || [ "$loopback_pid" != "$service_pid" ]; then
+  if [ "$loopback_count" -ne 1 ] || [ "$loopback_pid" != "$supervisor_pid" ]; then
     printf 'conflict\n'
     return 1
   fi
@@ -353,7 +570,7 @@ wait_for_restarted_health() {
   old_pid=$1
   wait_attempt=0
   while [ "$wait_attempt" -lt "$WAIT_ATTEMPTS" ]; do
-    new_pid=$(launchd_pid 2>/dev/null) || new_pid=
+    new_pid=$(service_pid 2>/dev/null) || new_pid=
     if [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] &&
       ! pid_is_listening "$old_pid" && health_state >/dev/null; then
       return 0
@@ -366,16 +583,50 @@ wait_for_restarted_health() {
   return 1
 }
 
+supervisor_load() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" bootstrap "${SERVICE_TARGET%/*}" "$SERVICE_DEFINITION_PATH" ;;
+    linux) "$SYSTEMCTL_BIN" --user enable --now "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_kickstart() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" kickstart "$SERVICE_TARGET" ;;
+    linux) "$SYSTEMCTL_BIN" --user restart "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_graceful_restart() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" kill SIGTERM "$SERVICE_TARGET" ;;
+    linux) "$SYSTEMCTL_BIN" --user restart "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
+supervisor_unload() {
+  [ "$#" -eq 0 ] || return 1
+  case "$PLATFORM" in
+    darwin) "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" ;;
+    linux) "$SYSTEMCTL_BIN" --user stop "$SERVICE_TARGET" ;;
+    *) return 1 ;;
+  esac
+}
+
 bootstrap_service() {
   [ "$#" -eq 0 ] || return 1
-  local service_domain
-  service_domain=${SERVICE_TARGET%/*}
-  "$LAUNCHCTL_BIN" bootstrap "$service_domain" "$PLIST_PATH" || {
-    die 'could not bootstrap LaunchAgent'
+  supervisor_load || {
+    die 'could not load the service'
     return 1
   }
   wait_for_health || {
-    die 'LaunchAgent did not become healthy'
+    die 'the service did not become healthy'
     return 1
   }
 }
@@ -390,14 +641,14 @@ start_service() {
       return 1
       ;;
   esac
-  ensure_plist || return 1
+  ensure_service_definition || return 1
   case "$current_health" in
     healthy) return 0 ;;
     unloaded)
       bootstrap_service
       ;;
     starting)
-      current_pid=$(launchd_pid 2>/dev/null) || current_pid=
+      current_pid=$(service_pid 2>/dev/null) || current_pid=
       if [ -z "$current_pid" ]; then
         listener_conflict ''
         case "$?" in
@@ -407,12 +658,12 @@ start_service() {
             return 1
             ;;
         esac
-        "$LAUNCHCTL_BIN" kickstart "$SERVICE_TARGET" || {
-          die 'could not kickstart LaunchAgent'
+        supervisor_kickstart || {
+          die 'could not kickstart the service'
           return 1
         }
         wait_for_health || {
-          die 'LaunchAgent did not become healthy'
+          die 'the service did not become healthy'
           return 1
         }
       elif wait_for_health; then
@@ -433,13 +684,13 @@ stop_service() {
   [ "$#" -eq 0 ] || return 1
   local old_pid
   service_loaded || return 0
-  old_pid=$(launchd_pid 2>/dev/null) || old_pid=
-  "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
-    die 'could not boot out LaunchAgent'
+  old_pid=$(service_pid 2>/dev/null) || old_pid=
+  supervisor_unload || {
+    die 'could not unload the service'
     return 1
   }
   wait_for_service_absence "$old_pid" || {
-    die 'LaunchAgent did not stop cleanly'
+    die 'the service did not stop cleanly'
     return 1
   }
 }
@@ -454,13 +705,13 @@ restart_service() {
       return 1
       ;;
   esac
-  ensure_plist || return 1
+  ensure_service_definition || return 1
   [ "$restart_health" != unloaded ] || {
     bootstrap_service
     return $?
   }
 
-  old_pid=$(launchd_pid 2>/dev/null) || old_pid=
+  old_pid=$(service_pid 2>/dev/null) || old_pid=
   if [ -n "$old_pid" ]; then
     listener_conflict "$old_pid"
     case "$?" in
@@ -470,18 +721,18 @@ restart_service() {
         return 1
         ;;
     esac
-    if "$LAUNCHCTL_BIN" kill SIGTERM "$SERVICE_TARGET" &&
+    if supervisor_graceful_restart &&
       wait_for_restarted_health "$old_pid"; then
       return 0
     fi
   fi
 
-  "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
-    die 'could not boot out LaunchAgent during restart'
+  supervisor_unload || {
+    die 'could not unload the service during restart'
     return 1
   }
   wait_for_service_absence "$old_pid" || {
-    die 'old LaunchAgent instance did not stop'
+    die 'the old service instance did not stop'
     return 1
   }
   bootstrap_service
@@ -1142,10 +1393,23 @@ recover_activation() {
 }
 
 preflight_common() {
-  [ "$(/usr/bin/uname -s 2>/dev/null)" = Darwin ] || {
-    die 'macOS is required'
-    return 1
-  }
+  local expected_uname
+  case "$PLATFORM" in
+    darwin) expected_uname=Darwin ;;
+    linux) expected_uname=Linux ;;
+    *)
+      die 'unsupported platform'
+      return 1
+      ;;
+  esac
+  if [ "${DSH_SERVICE_TESTING:-0}" = 1 ] && [ -n "${DSH_SERVICE_PLATFORM:-}" ]; then
+    :
+  else
+    [ "$(/usr/bin/uname -s 2>/dev/null)" = "$expected_uname" ] || {
+      die "$expected_uname is required"
+      return 1
+    }
+  fi
   case "$HOME" in
     '')
       die 'HOME must not be empty'
@@ -1164,21 +1428,38 @@ preflight_common() {
       return 1
       ;;
   esac
-  case "$LAUNCHCTL_BIN" in
-    /*) ;;
-    *)
-      die 'launchctl path must be absolute'
-      return 1
+  case "$PLATFORM" in
+    darwin)
+      case "$LAUNCHCTL_BIN" in
+        /*) ;;
+        *)
+          die 'launchctl path must be absolute'
+          return 1
+          ;;
+      esac
+      [ -x "$LAUNCHCTL_BIN" ] || {
+        die 'launchctl is unavailable'
+        return 1
+      }
+      "$LAUNCHCTL_BIN" print "gui/$(/usr/bin/id -u)" >/dev/null 2>&1 || {
+        die 'launchd GUI domain is unavailable'
+        return 1
+      }
+      ;;
+    linux)
+      case "$SYSTEMCTL_BIN" in
+        /*) ;;
+        *)
+          die 'systemctl path must be absolute'
+          return 1
+          ;;
+      esac
+      [ -f "$SYSTEMCTL_BIN" ] && [ -x "$SYSTEMCTL_BIN" ] || {
+        die 'systemctl is unavailable'
+        return 1
+      }
       ;;
   esac
-  [ -x "$LAUNCHCTL_BIN" ] || {
-    die 'launchctl is unavailable'
-    return 1
-  }
-  "$LAUNCHCTL_BIN" print "gui/$(/usr/bin/id -u)" >/dev/null 2>&1 || {
-    die 'launchd GUI domain is unavailable'
-    return 1
-  }
 
   for command_path in "$@"; do
     case "$command_path" in
@@ -1239,7 +1520,11 @@ resolve_node_and_npm() {
 
 preflight_install() {
   preflight_manager_destinations || return 1
-  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  if [ "$PLATFORM" = darwin ]; then
+    preflight_common "$PLUTIL_BIN" "$LISTENER_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  else
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
+  fi
   resolve_node_and_npm || return 1
   resolve_manager_sources
 }
@@ -1273,8 +1558,12 @@ preflight_manager_destinations() {
   validate_optional_install_directory "$HOME" || return 1
   validate_optional_install_directory "$HOME/.local" || return 1
   validate_optional_install_directory "${CLI_DEST%/*}" || return 1
-  validate_optional_install_directory "$HOME/Library" || return 1
-  validate_optional_install_directory "$HOME/Library/Application Support" || return 1
+  if [ -n "$ROOT_GRANDPARENT_DIR" ]; then
+    validate_optional_install_directory "$ROOT_GRANDPARENT_DIR" || return 1
+    validate_optional_install_directory "$ROOT_PARENT_DIR" || return 1
+  else
+    validate_optional_install_directory "${XDG_DATA_HOME:-}" || return 1
+  fi
   validate_optional_install_directory "$DSH_SERVICE_ROOT" || return 1
   validate_optional_install_directory "${RUNNER_TEMPLATE%/*}" || return 1
   validate_optional_manager_file "$CLI_DEST" || return 1
@@ -1474,6 +1763,17 @@ current_release_id() {
   printf '%s\n' "$current_id"
 }
 
+move_over_link() {
+  [ "$#" -eq 2 ] || return 1
+  # BSD mv replaces a symlink destination with -h; GNU mv needs -T for the
+  # same no-dereference rename. The flag follows the host coreutils, not the
+  # managed service platform, so branch on the live kernel name.
+  case "$(/usr/bin/uname -s 2>/dev/null)" in
+    Darwin) /bin/mv -fh "$1" "$2" ;;
+    *) /bin/mv -fT "$1" "$2" ;;
+  esac
+}
+
 atomic_release_link() {
   [ "$#" -eq 2 ] || {
     die 'atomic_release_link requires a link path and release ID'
@@ -1512,7 +1812,7 @@ atomic_release_link() {
     die 'could not create temporary release link'
     return 1
   }
-  if ! /bin/mv -fh "$link_tmp" "$link_path"; then
+  if ! move_over_link "$link_tmp" "$link_path"; then
     /bin/rm -f -- "$link_tmp"
     die 'could not publish release link'
     return 1
@@ -1895,8 +2195,8 @@ record_install_directory() {
 
 prepare_install_lock_root() {
   [ "$#" -eq 0 ] || return 1
-  INSTALL_CREATED_LIBRARY=0
-  INSTALL_CREATED_APP_SUPPORT=0
+  INSTALL_CREATED_ROOT_GRANDPARENT=0
+  INSTALL_CREATED_ROOT_PARENT=0
   INSTALL_CREATED_ROOT=0
   INSTALL_CREATED_LIBEXEC=0
   INSTALL_CREATED_RELEASES=0
@@ -1904,8 +2204,15 @@ prepare_install_lock_root() {
   INSTALL_CREATED_BIN=0
   ACTIVE_STAGING_RELEASE=
 
-  record_install_directory "$HOME/Library" INSTALL_CREATED_LIBRARY || return 1
-  record_install_directory "$HOME/Library/Application Support" INSTALL_CREATED_APP_SUPPORT || return 1
+  if [ -n "$ROOT_GRANDPARENT_DIR" ]; then
+    record_install_directory "$ROOT_GRANDPARENT_DIR" INSTALL_CREATED_ROOT_GRANDPARENT || return 1
+    record_install_directory "$ROOT_PARENT_DIR" INSTALL_CREATED_ROOT_PARENT || return 1
+  else
+    [ -d "${XDG_DATA_HOME:-}" ] && [ ! -L "${XDG_DATA_HOME:-}" ] || {
+      die 'XDG_DATA_HOME must be an existing physical directory'
+      return 1
+    }
+  fi
   record_install_directory "$DSH_SERVICE_ROOT" INSTALL_CREATED_ROOT
 }
 
@@ -1926,8 +2233,8 @@ cleanup_install_directories() {
   [ "${INSTALL_CREATED_LOCAL:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/.local" 2>/dev/null || :
   [ "${INSTALL_CREATED_LIBEXEC:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_SERVICE_ROOT/libexec" 2>/dev/null || :
   [ "${INSTALL_CREATED_ROOT:-0}" -eq 0 ] || /bin/rmdir -- "$DSH_SERVICE_ROOT" 2>/dev/null || :
-  [ "${INSTALL_CREATED_APP_SUPPORT:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library/Application Support" 2>/dev/null || :
-  [ "${INSTALL_CREATED_LIBRARY:-0}" -eq 0 ] || /bin/rmdir -- "$HOME/Library" 2>/dev/null || :
+  [ "${INSTALL_CREATED_ROOT_PARENT:-0}" -eq 0 ] || [ -z "$ROOT_PARENT_DIR" ] || /bin/rmdir -- "$ROOT_PARENT_DIR" 2>/dev/null || :
+  [ "${INSTALL_CREATED_ROOT_GRANDPARENT:-0}" -eq 0 ] || [ -z "$ROOT_GRANDPARENT_DIR" ] || /bin/rmdir -- "$ROOT_GRANDPARENT_DIR" 2>/dev/null || :
 }
 
 next_manager_transaction_path() {
@@ -2085,6 +2392,18 @@ install_manager_cli() {
   }
 }
 
+warn_if_no_linger() {
+  [ "$#" -eq 0 ] || return 1
+  [ "$PLATFORM" = linux ] || return 0
+  local linger_state install_user
+  install_user=$(/usr/bin/id -un) || return 0
+  [ -f "$LOGINCTL_BIN" ] && [ -x "$LOGINCTL_BIN" ] || return 0
+  linger_state=$("$LOGINCTL_BIN" show-user --value -p Linger "$install_user" 2>/dev/null) || return 0
+  [ "$linger_state" = no ] || return 0
+  note 'lingering is off: the service stops at logout and returns at next login'
+  note "for always-on servers run: loginctl enable-linger $install_user"
+}
+
 print_path_hint() {
   [ "$#" -eq 0 ] || return 1
   local manager_bin
@@ -2099,7 +2418,11 @@ print_path_hint() {
 
 preflight_service_command() {
   [ "$#" -eq 0 ] || return 1
-  preflight_common "$PLUTIL_BIN" "$LSOF_BIN" "$CURL_BIN" || return 1
+  if [ "$PLATFORM" = darwin ]; then
+    preflight_common "$PLUTIL_BIN" "$LISTENER_BIN" "$CURL_BIN" || return 1
+  else
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
+  fi
   [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ] || {
     die 'dsh-service is not installed'
     return 1
@@ -2173,7 +2496,7 @@ cmd_install() {
     stage_release || install_status=1
   fi
   if [ "$install_status" -eq 0 ]; then
-    ensure_plist || install_status=1
+    ensure_service_definition || install_status=1
   fi
   if [ "$install_status" -eq 0 ]; then
     staged_release=$STAGED_RELEASE_ID
@@ -2204,6 +2527,7 @@ cmd_install() {
     return 1
   fi
   INSTALL_CLEANUP_ACTIVE=0
+  warn_if_no_linger || :
   print_path_hint
 }
 
@@ -2212,19 +2536,19 @@ cmd_status() {
     die 'usage: dsh-service status'
     return 64
   }
-  local status_dsh_version status_launchd status_pid status_health status_code
-  preflight_common "$LSOF_BIN" "$CURL_BIN" || return 1
+  local status_dsh_version status_supervisor status_pid status_health status_code supervisor_label
+  preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
 
   status_dsh_version='not installed'
   if status_release_id=$(current_release_id 2>/dev/null) &&
     read_manifest "$RELEASES_DIR/$status_release_id/manifest.env" 2>/dev/null; then
     status_dsh_version=$MANIFEST_DSH_VERSION
   fi
-  status_launchd=unloaded
+  status_supervisor=unloaded
   status_pid='-'
   if service_loaded; then
-    status_launchd=loaded
-    status_pid=$(launchd_pid 2>/dev/null) || status_pid='-'
+    status_supervisor=loaded
+    status_pid=$(service_pid 2>/dev/null) || status_pid='-'
   fi
 
   status_code=0
@@ -2236,13 +2560,35 @@ cmd_status() {
     status_code=$?
   fi
 
+  case "$PLATFORM" in
+    darwin) supervisor_label=Launchd ;;
+    linux) supervisor_label=Systemd ;;
+    *) supervisor_label=Supervisor ;;
+  esac
   printf 'Manager version: %s\n' "$MANAGER_VERSION"
   printf 'DSH version: %s\n' "$status_dsh_version"
-  printf 'Launchd: %s\n' "$status_launchd"
+  printf '%s: %s\n' "$supervisor_label" "$status_supervisor"
   printf 'PID: %s\n' "$status_pid"
   printf 'URL: %s\n' 'http://127.0.0.1:3080'
   printf 'Health: %s\n' "$status_health"
   return "$status_code"
+}
+
+open_linux_url() {
+  [ "$#" -eq 0 ] || return 1
+  local xdg_open_bin
+  if [ "${DSH_SERVICE_TESTING:-0}" = 1 ] && [ -n "${DSH_SERVICE_XDG_OPEN_BIN:-}" ]; then
+    xdg_open_bin=$DSH_SERVICE_XDG_OPEN_BIN
+    [ -f "$xdg_open_bin" ] && [ -x "$xdg_open_bin" ] || xdg_open_bin=
+  else
+    xdg_open_bin=$(resolve_external_command xdg-open) || xdg_open_bin=
+  fi
+  if [ -n "$xdg_open_bin" ] && "$xdg_open_bin" http://127.0.0.1:3080 2>/dev/null; then
+    return 0
+  fi
+  note 'no graphical opener was found; open this URL in a browser'
+  note 'on a remote machine, tunnel first: ssh -L 3080:127.0.0.1:3080 <host>'
+  printf '%s\n' 'http://127.0.0.1:3080'
 }
 
 cmd_open() {
@@ -2250,7 +2596,11 @@ cmd_open() {
     die 'usage: dsh-service open'
     return 64
   }
-  preflight_common "$LSOF_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  if [ "$PLATFORM" = darwin ]; then
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" "$OPEN_BIN" || return 1
+  else
+    preflight_common "$LISTENER_BIN" "$CURL_BIN" || return 1
+  fi
   if [ -e "$ACTIVATION_FILE" ] || [ -L "$ACTIVATION_FILE" ]; then
     die 'DSH activation was interrupted'
     return 1
@@ -2259,7 +2609,11 @@ cmd_open() {
     die 'DSH service is not healthy'
     return 1
   }
-  "$OPEN_BIN" http://127.0.0.1:3080
+  case "$PLATFORM" in
+    darwin) "$OPEN_BIN" http://127.0.0.1:3080 ;;
+    linux) open_linux_url ;;
+    *) return 1 ;;
+  esac
 }
 
 cmd_logs() {
@@ -2279,7 +2633,11 @@ validate_uninstall_root() {
     *) return 1 ;;
   esac
   [ -n "$HOME" ] || return 1
-  expected_root="$HOME/Library/Application Support/dsh-service"
+  case "$PLATFORM" in
+    darwin) expected_root="$HOME/Library/Application Support/dsh-service" ;;
+    linux) expected_root="${XDG_DATA_HOME:-$HOME/.local/share}/dsh-service" ;;
+    *) return 1 ;;
+  esac
   [ "$DSH_SERVICE_ROOT" = "$expected_root" ] || return 1
   [ "$DSH_SERVICE_ROOT" != / ] || return 1
   [ -d "$DSH_SERVICE_ROOT" ] && [ ! -L "$DSH_SERVICE_ROOT" ]
@@ -2307,14 +2665,30 @@ cmd_uninstall() {
   fi
 
   uninstall_status=0
-  if service_loaded; then
-    "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
-      die 'could not boot out LaunchAgent'
-      uninstall_status=1
-    }
-  fi
+  case "$PLATFORM" in
+    darwin)
+      if service_loaded; then
+        "$LAUNCHCTL_BIN" bootout "$SERVICE_TARGET" || {
+          die 'could not boot out LaunchAgent'
+          uninstall_status=1
+        }
+      fi
+      ;;
+    linux)
+      if [ -e "$SERVICE_DEFINITION_PATH" ] || service_loaded; then
+        "$SYSTEMCTL_BIN" --user disable --now "$SERVICE_TARGET" || {
+          die 'could not disable the systemd unit'
+          uninstall_status=1
+        }
+      fi
+      ;;
+    *) uninstall_status=1 ;;
+  esac
   if [ "$uninstall_status" -eq 0 ]; then
-    /bin/rm -f -- "$PLIST_PATH" || uninstall_status=1
+    /bin/rm -f -- "$SERVICE_DEFINITION_PATH" || uninstall_status=1
+  fi
+  if [ "$uninstall_status" -eq 0 ] && [ "$PLATFORM" = linux ]; then
+    "$SYSTEMCTL_BIN" --user daemon-reload || uninstall_status=1
   fi
   if [ "$uninstall_status" -eq 0 ]; then
     /bin/rm -f -- "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log" || uninstall_status=1
@@ -2461,6 +2835,9 @@ main() {
   esac
 }
 
+if ! detect_platform; then
+  return 1 2>/dev/null || exit 1
+fi
 init_command_paths
 init_paths
 

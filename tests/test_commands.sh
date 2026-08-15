@@ -7,6 +7,8 @@ CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
+export DSH_SERVICE_PLATFORM=darwin
+
 assert_contains() {
   case "$1" in
     *"$2"*) return 0 ;;
@@ -271,7 +273,7 @@ test_help_and_version_are_read_only() {
 
   run_cli version
   assert_eq 0 "$CLI_STATUS" || return 1
-  assert_eq '0.1.0' "$CLI_OUTPUT" || return 1
+  assert_eq '0.2.0' "$CLI_OUTPUT" || return 1
 
   after=$(home_inventory) || return 1
   assert_eq "$before" "$after"
@@ -284,7 +286,7 @@ test_status_prints_all_public_fields() {
   run_cli status
 
   assert_eq 0 "$CLI_STATUS" || return 1
-  assert_line "$CLI_OUTPUT" 'Manager version: 0.1.0' || return 1
+  assert_line "$CLI_OUTPUT" 'Manager version: 0.2.0' || return 1
   assert_line "$CLI_OUTPUT" 'DSH version: 1.2.3' || return 1
   assert_line "$CLI_OUTPUT" 'Launchd: loaded' || return 1
   assert_line "$CLI_OUTPUT" 'PID: 4242' || return 1
@@ -453,8 +455,8 @@ test_term_during_stage_restores_both_older_manager_files_and_lock() {
   printf 'older cli before TERM\n' >"$installed_cli" || return 1
   printf 'older runner before TERM\n' >"$installed_runner" || return 1
   /bin/chmod 0755 "$installed_cli" "$installed_runner" || return 1
-  cli_identity=$(/usr/bin/stat -f '%i:%Lp' "$installed_cli") || return 1
-  runner_identity=$(/usr/bin/stat -f '%i:%Lp' "$installed_runner") || return 1
+  cli_identity=$(stat_id '%i:%Lp' '%i:%a' "$installed_cli") || return 1
+  runner_identity=$(stat_id '%i:%Lp' '%i:%a' "$installed_runner") || return 1
   export DSH_TEST_NPM_SIGNAL=TERM
 
   run_cli install
@@ -462,8 +464,8 @@ test_term_during_stage_restores_both_older_manager_files_and_lock() {
   assert_eq 143 "$CLI_STATUS" || return 1
   assert_eq 'older cli before TERM' "$(<"$installed_cli")" || return 1
   assert_eq 'older runner before TERM' "$(<"$installed_runner")" || return 1
-  assert_eq "$cli_identity" "$(/usr/bin/stat -f '%i:%Lp' "$installed_cli")" || return 1
-  assert_eq "$runner_identity" "$(/usr/bin/stat -f '%i:%Lp' "$installed_runner")" || return 1
+  assert_eq "$cli_identity" "$(stat_id '%i:%Lp' '%i:%a' "$installed_cli")" || return 1
+  assert_eq "$runner_identity" "$(stat_id '%i:%Lp' '%i:%a' "$installed_runner")" || return 1
   [ ! -e "$HOME/Library/Application Support/dsh-service/.lock" ] || return 1
   [ ! -e "$HOME/Library/Application Support/dsh-service/releases" ] || return 1
   assert_no_install_transaction_artifacts
@@ -487,13 +489,13 @@ test_cli_destination_directory_is_rejected_before_external_preflight() {
   /bin/mkdir -p "$cli_destination" || return 1
   printf 'cli directory marker\n' >"$cli_destination/marker" || return 1
   before=$(home_inventory) || return 1
-  identity=$(/usr/bin/stat -f '%HT:%i:%m' "$cli_destination") || return 1
+  identity=$(stat_id '%HT:%i:%m' '%F:%i:%Y' "$cli_destination") || return 1
 
   run_cli install
 
   assert_eq 1 "$CLI_STATUS" || return 1
   assert_eq "$before" "$(home_inventory)" || return 1
-  assert_eq "$identity" "$(/usr/bin/stat -f '%HT:%i:%m' "$cli_destination")" || return 1
+  assert_eq "$identity" "$(stat_id '%HT:%i:%m' '%F:%i:%Y' "$cli_destination")" || return 1
   assert_eq 'cli directory marker' "$(<"$cli_destination/marker")" || return 1
   assert_eq '' "$(<"$DSH_TEST_COMMAND_LOG")" || return 1
   assert_eq '' "$(<"$DSH_TEST_NPM_LOG")" || return 1
@@ -507,13 +509,13 @@ test_runner_destination_directory_is_rejected_before_external_preflight() {
   /bin/mkdir -p "$runner_destination" || return 1
   printf 'runner directory marker\n' >"$runner_destination/marker" || return 1
   before=$(home_inventory) || return 1
-  identity=$(/usr/bin/stat -f '%HT:%i:%m' "$runner_destination") || return 1
+  identity=$(stat_id '%HT:%i:%m' '%F:%i:%Y' "$runner_destination") || return 1
 
   run_cli install
 
   assert_eq 1 "$CLI_STATUS" || return 1
   assert_eq "$before" "$(home_inventory)" || return 1
-  assert_eq "$identity" "$(/usr/bin/stat -f '%HT:%i:%m' "$runner_destination")" || return 1
+  assert_eq "$identity" "$(stat_id '%HT:%i:%m' '%F:%i:%Y' "$runner_destination")" || return 1
   assert_eq 'runner directory marker' "$(<"$runner_destination/marker")" || return 1
   assert_eq '' "$(<"$DSH_TEST_COMMAND_LOG")" || return 1
   assert_eq '' "$(<"$DSH_TEST_NPM_LOG")" || return 1
@@ -551,7 +553,7 @@ test_repeated_installed_install_reuses_release_and_preserves_pid() {
   installed_cli="$HOME/.local/bin/dsh-service"
   first_pid=$(<"$DSH_TEST_PID")
   first_count=$(release_count)
-  first_identity=$(/usr/bin/stat -f '%i:%m' "$installed_cli") || return 1
+  first_identity=$(stat_id '%i:%m' '%i:%Y' "$installed_cli") || return 1
   : >"$DSH_TEST_OPEN_LOG"
 
   CLI_OUTPUT=$(DSH_SERVICE_SOURCE_ONLY=0 /bin/bash "$installed_cli" install 2>&1)
@@ -563,7 +565,7 @@ test_repeated_installed_install_reuses_release_and_preserves_pid() {
   }
   assert_eq "$first_count" "$(release_count)" || return 1
   assert_eq "$first_pid" "$(<"$DSH_TEST_PID")" || return 1
-  assert_eq "$first_identity" "$(/usr/bin/stat -f '%i:%m' "$installed_cli")" || return 1
+  assert_eq "$first_identity" "$(stat_id '%i:%m' '%i:%Y' "$installed_cli")" || return 1
   assert_eq 'http://127.0.0.1:3080' "$(<"$DSH_TEST_OPEN_LOG")"
 }
 

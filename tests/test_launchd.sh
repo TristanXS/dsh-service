@@ -7,6 +7,8 @@ CLI_PATH="$TESTS_DIR/../bin/dsh-service"
 
 . "$TESTS_DIR/helpers.sh"
 
+export DSH_SERVICE_PLATFORM=darwin
+
 export DSH_SERVICE_SOURCE_ONLY=1
 if ! . "$CLI_PATH"; then
   printf 'could not source CLI: %s\n' "$CLI_PATH" >&2
@@ -255,7 +257,14 @@ prepare_launchd_case() {
 
   write_launchd_fakes
   export DSH_SERVICE_LAUNCHCTL_BIN="$TEST_ROOT/bin/launchctl"
-  export DSH_SERVICE_PLUTIL_BIN=/usr/bin/plutil
+  if [ -x /usr/bin/plutil ]; then
+    export DSH_SERVICE_PLUTIL_BIN=/usr/bin/plutil
+  else
+    # On Linux hosts the darwin suite runs without a real plist linter; a
+    # permissive fake keeps the flows intact while macOS runs keep full lint.
+    write_fake plutil-pass 'exit 0'
+    export DSH_SERVICE_PLUTIL_BIN="$TEST_ROOT/bin/plutil-pass"
+  fi
   export DSH_SERVICE_LSOF_BIN="$TEST_ROOT/bin/lsof"
   export DSH_SERVICE_CURL_BIN="$TEST_ROOT/bin/curl"
   export DSH_SERVICE_OPEN_BIN="$TEST_ROOT/bin/open"
@@ -285,7 +294,7 @@ set_lsof_failure() {
 }
 
 plist_identity() {
-  /usr/bin/stat -f '%i:%m' "$PLIST_PATH"
+  stat_id '%i:%m' '%i:%Y' "$SERVICE_DEFINITION_PATH"
 }
 
 assert_log_has_line() {
@@ -332,7 +341,7 @@ assert_health() {
 }
 
 plist_raw() {
-  /usr/bin/plutil -extract "$1" raw -o - "$PLIST_PATH"
+  /usr/bin/plutil -extract "$1" raw -o - "$SERVICE_DEFINITION_PATH"
 }
 
 test_plist_is_valid_and_preserves_special_paths() (
@@ -344,23 +353,25 @@ test_plist_is_valid_and_preserves_special_paths() (
   export DEEPSEEK_API_KEY='another-secret'
 
   ensure_plist || return 1
-  /usr/bin/plutil -lint "$PLIST_PATH" >/dev/null || return 1
-  assert_eq dev.dsh-service.web "$(plist_raw Label)" || return 1
-  assert_eq 2 "$(plist_raw ProgramArguments)" || return 1
-  assert_eq /bin/bash "$(plist_raw ProgramArguments.0)" || return 1
-  assert_eq "$CURRENT_LINK/run" "$(plist_raw ProgramArguments.1)" || return 1
-  assert_eq "$WORKSPACE_DIR" "$(plist_raw WorkingDirectory)" || return 1
-  assert_eq "$HOME" "$(plist_raw EnvironmentVariables.HOME)" || return 1
-  assert_eq true "$(plist_raw KeepAlive)" || return 1
-  assert_eq 10 "$(plist_raw ThrottleInterval)" || return 1
-  assert_eq 15 "$(plist_raw ExitTimeOut)" || return 1
-  assert_eq "$LOG_DIR/stdout.log" "$(plist_raw StandardOutPath)" || return 1
-  assert_eq "$LOG_DIR/stderr.log" "$(plist_raw StandardErrorPath)" || return 1
-  if /usr/bin/plutil -extract RunAtLoad raw -o - "$PLIST_PATH" >/dev/null 2>&1; then
-    printf 'plist unexpectedly contains RunAtLoad\n' >&2
-    return 1
+  if [ -x /usr/bin/plutil ]; then
+    /usr/bin/plutil -lint "$SERVICE_DEFINITION_PATH" >/dev/null || return 1
+    assert_eq dev.dsh-service.web "$(plist_raw Label)" || return 1
+    assert_eq 2 "$(plist_raw ProgramArguments)" || return 1
+    assert_eq /bin/bash "$(plist_raw ProgramArguments.0)" || return 1
+    assert_eq "$CURRENT_LINK/run" "$(plist_raw ProgramArguments.1)" || return 1
+    assert_eq "$WORKSPACE_DIR" "$(plist_raw WorkingDirectory)" || return 1
+    assert_eq "$HOME" "$(plist_raw EnvironmentVariables.HOME)" || return 1
+    assert_eq true "$(plist_raw KeepAlive)" || return 1
+    assert_eq 10 "$(plist_raw ThrottleInterval)" || return 1
+    assert_eq 15 "$(plist_raw ExitTimeOut)" || return 1
+    assert_eq "$LOG_DIR/stdout.log" "$(plist_raw StandardOutPath)" || return 1
+    assert_eq "$LOG_DIR/stderr.log" "$(plist_raw StandardErrorPath)" || return 1
+    if /usr/bin/plutil -extract RunAtLoad raw -o - "$SERVICE_DEFINITION_PATH" >/dev/null 2>&1; then
+      printf 'plist unexpectedly contains RunAtLoad\n' >&2
+      return 1
+    fi
   fi
-  plist_text=$(<"$PLIST_PATH")
+  plist_text=$(<"$SERVICE_DEFINITION_PATH")
   case "$plist_text" in
     *secret-must-not-appear*|*another-secret*) return 1 ;;
   esac
@@ -369,7 +380,7 @@ test_plist_is_valid_and_preserves_special_paths() (
 test_failed_plist_lint_preserves_published_file() (
   prepare_launchd_case plist-atomic || return 1
   ensure_plist || return 1
-  original_plist=$(<"$PLIST_PATH")
+  original_plist=$(<"$SERVICE_DEFINITION_PATH")
   export DSH_TEST_PLUTIL_LOG="$TEST_ROOT/plutil-failure.log"
   : >"$DSH_TEST_PLUTIL_LOG"
   write_fake plutil-reject '
@@ -379,21 +390,21 @@ exit 1'
   WORKSPACE_DIR="$WORKSPACE_DIR/changed"
 
   ! ensure_plist || return 1
-  assert_eq "$original_plist" "$(<"$PLIST_PATH")" || return 1
+  assert_eq "$original_plist" "$(<"$SERVICE_DEFINITION_PATH")" || return 1
   [ -s "$DSH_TEST_PLUTIL_LOG" ] || return 1
-  for temporary_plist in "$(dirname -- "$PLIST_PATH")"/.dev.dsh-service.web.plist.*; do
+  for temporary_plist in "$(dirname -- "$SERVICE_DEFINITION_PATH")"/.dev.dsh-service.web.plist.*; do
     [ ! -e "$temporary_plist" ] || return 1
   done
 )
 
-test_launchd_pid_accepts_only_valid_successful_print_line() (
+test_service_pid_accepts_only_valid_successful_print_line() (
   prepare_launchd_case pid-strict || return 1
   set_job 1 4321
   printf 'decoys\n' >"$DSH_TEST_PRINT_MODE_FILE"
-  assert_eq 4321 "$(launchd_pid)" || return 1
+  assert_eq 4321 "$(service_pid)" || return 1
 
   printf 'fail-with-pid\n' >"$DSH_TEST_PRINT_MODE_FILE"
-  failed_output=$(launchd_pid)
+  failed_output=$(service_pid)
   failed_status=$?
   assert_eq 1 "$failed_status" || return 1
   assert_eq '' "$failed_output"
@@ -488,7 +499,7 @@ test_start_bootstraps_an_unloaded_service() (
   start_service || return 1
 
   uid=$(/usr/bin/id -u)
-  assert_log_has_line "bootstrap|gui/$uid|$PLIST_PATH" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
+  assert_log_has_line "bootstrap|gui/$uid|$SERVICE_DEFINITION_PATH" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
   assert_health healthy 0 || return 1
   assert_no_kickstart_k "$DSH_TEST_LAUNCHCTL_LOG"
 )
@@ -515,7 +526,7 @@ test_restart_uses_graceful_launchctl_signal_and_new_identity() (
 
   restart_service || return 1
   assert_log_has_line "kill|SIGTERM|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
-  assert_eq 204 "$(launchd_pid)" || return 1
+  assert_eq 204 "$(service_pid)" || return 1
   assert_eq '' "$(<"$shell_kill_log")" || return 1
   assert_health healthy 0 || return 1
   assert_no_kickstart_k "$DSH_TEST_LAUNCHCTL_LOG"
@@ -531,7 +542,7 @@ test_start_restarts_its_unhealthy_owned_listener_gracefully() (
 
   start_service || return 1
   assert_log_has_line "kill|SIGTERM|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
-  assert_eq 205 "$(launchd_pid)" || return 1
+  assert_eq 205 "$(service_pid)" || return 1
   assert_health healthy 0
 )
 
@@ -548,8 +559,8 @@ test_restart_falls_back_once_to_bootout_and_bootstrap() (
   uid=$(/usr/bin/id -u)
   assert_log_has_line "kill|SIGTERM|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
   assert_log_has_line "bootout|$SERVICE_TARGET" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
-  assert_log_has_line "bootstrap|gui/$uid|$PLIST_PATH" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
-  assert_eq 206 "$(launchd_pid)" || return 1
+  assert_log_has_line "bootstrap|gui/$uid|$SERVICE_DEFINITION_PATH" "$DSH_TEST_LAUNCHCTL_LOG" || return 1
+  assert_eq 206 "$(service_pid)" || return 1
   assert_health healthy 0 || return 1
   assert_no_kickstart_k "$DSH_TEST_LAUNCHCTL_LOG"
 )
@@ -603,9 +614,9 @@ test_start_refuses_foreign_listener_without_mutation_or_kill() (
   : >"$shell_kill_log"
   kill() { printf '%s\n' "$*" >>"$shell_kill_log"; }
 
-  [ ! -e "$PLIST_PATH" ] || return 1
+  [ ! -e "$SERVICE_DEFINITION_PATH" ] || return 1
   ! start_service || return 1
-  [ ! -e "$PLIST_PATH" ] || return 1
+  [ ! -e "$SERVICE_DEFINITION_PATH" ] || return 1
   [ ! -e "$LOG_DIR" ] || return 1
   [ ! -e "$WORKSPACE_DIR" ] || return 1
   assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG" || return 1
@@ -621,13 +632,13 @@ test_restart_refuses_foreign_listener_without_mutation_or_kill() (
   : >"$shell_kill_log"
   kill() { printf '%s\n' "$*" >>"$shell_kill_log"; }
 
-  /bin/mkdir -p "${PLIST_PATH%/*}" || return 1
-  printf 'existing plist sentinel\n' >"$PLIST_PATH" || return 1
-  /usr/bin/touch -t 200001010101 "$PLIST_PATH" || return 1
+  /bin/mkdir -p "${SERVICE_DEFINITION_PATH%/*}" || return 1
+  printf 'existing plist sentinel\n' >"$SERVICE_DEFINITION_PATH" || return 1
+  /usr/bin/touch -t 200001010101 "$SERVICE_DEFINITION_PATH" || return 1
   before_identity=$(plist_identity) || return 1
 
   ! restart_service || return 1
-  assert_eq 'existing plist sentinel' "$(<"$PLIST_PATH")" || return 1
+  assert_eq 'existing plist sentinel' "$(<"$SERVICE_DEFINITION_PATH")" || return 1
   assert_eq "$before_identity" "$(plist_identity)" || return 1
   assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG" || return 1
   assert_eq '' "$(<"$shell_kill_log")"
@@ -638,7 +649,7 @@ test_start_lsof_error_makes_no_manager_owned_mutation() (
   set_lsof_failure 2 ''
 
   ! start_service || return 1
-  [ ! -e "$PLIST_PATH" ] || return 1
+  [ ! -e "$SERVICE_DEFINITION_PATH" ] || return 1
   [ ! -e "$LOG_DIR" ] || return 1
   [ ! -e "$WORKSPACE_DIR" ] || return 1
   assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG"
@@ -649,20 +660,20 @@ test_restart_lsof_diagnostic_preserves_existing_plist() (
   set_job 1 101
   set_listeners '101|127.0.0.1:3080' || return 1
   set_lsof_failure 1 'lsof: unexpected diagnostic'
-  /bin/mkdir -p "${PLIST_PATH%/*}" || return 1
-  printf 'existing plist sentinel\n' >"$PLIST_PATH" || return 1
-  /usr/bin/touch -t 200001010101 "$PLIST_PATH" || return 1
+  /bin/mkdir -p "${SERVICE_DEFINITION_PATH%/*}" || return 1
+  printf 'existing plist sentinel\n' >"$SERVICE_DEFINITION_PATH" || return 1
+  /usr/bin/touch -t 200001010101 "$SERVICE_DEFINITION_PATH" || return 1
   before_identity=$(plist_identity) || return 1
 
   ! restart_service || return 1
-  assert_eq 'existing plist sentinel' "$(<"$PLIST_PATH")" || return 1
+  assert_eq 'existing plist sentinel' "$(<"$SERVICE_DEFINITION_PATH")" || return 1
   assert_eq "$before_identity" "$(plist_identity)" || return 1
   assert_log_has_no_mutation "$DSH_TEST_LAUNCHCTL_LOG"
 )
 
 run_test 'plist is valid and preserves XML-sensitive paths' test_plist_is_valid_and_preserves_special_paths
 run_test 'failed plist lint preserves the published plist' test_failed_plist_lint_preserves_published_file
-run_test 'launchd PID parsing requires a valid successful print line' test_launchd_pid_accepts_only_valid_successful_print_line
+run_test 'launchd PID parsing requires a valid successful print line' test_service_pid_accepts_only_valid_successful_print_line
 run_test 'matching job, listener, and HTTP are healthy without body output' test_health_is_healthy_only_for_matching_identity_and_http
 run_test 'different listener identity is a conflict' test_health_reports_conflict_for_different_listener_pid
 run_test 'IPv4 and IPv6 wildcard listeners are conflicts' test_health_reports_conflict_for_every_wildcard_listener

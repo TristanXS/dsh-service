@@ -4,7 +4,7 @@ English | [简体中文](README.zh.md)
 
 [![CI](https://github.com/TristanXS/dsh-service/actions/workflows/ci.yml/badge.svg)](https://github.com/TristanXS/dsh-service/actions/workflows/ci.yml) [![License](https://img.shields.io/github/license/TristanXS/dsh-service)](LICENSE)
 
-DSH Service runs [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) as a reliable per-user macOS service with login startup, health-aware lifecycle commands, transactional updates, and automatic rollback.
+DSH Service runs [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) as a reliable per-user service on macOS (launchd) and Linux (systemd) with login startup, health-aware lifecycle commands, transactional updates, and automatic rollback.
 
 > [!WARNING]
 > DSH Service is a public alpha. Automated tests and a guarded macOS `launchd` smoke test passed, but commands, installed paths, and behavior may change before `v1.0`.
@@ -21,21 +21,28 @@ DSH Service keeps the official DSH Web UI available after login without leaving 
 
 | Foreground `npx` | Managed service |
 | --- | --- |
-| Runs in the current terminal | Runs as one per-user macOS LaunchAgent |
+| Runs in the current terminal | Runs as one per-user LaunchAgent (macOS) or systemd user unit (Linux) |
 | Stops when its foreground process exits | Starts at login and restarts after an unexpected exit |
 | Has no managed status or recovery | Checks health for lifecycle commands and updates |
 | Requires manual package invocation | Installs versioned releases and rolls back failed activation |
 
 ## Requirements
 
-Install from an interactive macOS login with these prerequisites:
+Install from an interactive login with these prerequisites on both platforms:
 
 - Node.js `^22.19.0 || >=24.0.0`
 - `node` and `npm` available as executable files on `PATH`
 - Network access to the npm registry
 - Transmission Control Protocol (TCP) port `3080` available on the local machine
 
-DSH Service currently supports only macOS. Linux and Windows support is planned, not available. Homebrew is not a product dependency; this repository uses it only to install ShellCheck on the continuous integration (CI) runner.
+macOS needs no additional tools. Linux additionally needs:
+
+- systemd with a working user session (`systemctl --user` must reach the user manager)
+- `ss` from iproute2 (standard on mainstream distributions)
+- a C/C++ toolchain and `python3` for npm native modules (on Debian and Ubuntu: `build-essential` and `python3`)
+- `xdg-open` is optional; without it, `dsh-service open` prints the URL instead of opening a browser
+
+Windows support is planned, not available. Homebrew is not a product dependency; this repository uses it only to install ShellCheck on the continuous integration (CI) runner.
 
 ## Get started
 
@@ -75,9 +82,11 @@ The command controls one per-user service at the fixed address `http://127.0.0.1
 
 The LaunchAgent starts at login and uses `KeepAlive` to restart DSH after an unexpected exit. `dsh-service stop` intentionally unloads the job but leaves its plist in place. Run `dsh-service start` to restore it now, or macOS loads it at your next login. Run `dsh-service uninstall` to remove login startup.
 
+On Linux the same semantics map to a systemd user unit named `dsh-service.service` with `Restart=on-failure`. `dsh-service stop` stops the unit but keeps it enabled, so it returns at your next login; `dsh-service uninstall` disables and removes it.
+
 ## Managed runtime
 
-The managed service does not run `npx`. Install and update resolve the current npm `latest` version of `@deepseek-ai/dsh` into a private, versioned package tree. The manager records the absolute Node.js executable and invokes the DSH entry point through `launchd`.
+The managed service does not run `npx`. Install and update resolve the current npm `latest` version of `@deepseek-ai/dsh` into a private, versioned package tree. The manager records the absolute Node.js executable and invokes the DSH entry point through `launchd` on macOS or the systemd user manager on Linux.
 
 By contrast, this command runs DSH in the foreground and attaches it to your terminal:
 
@@ -108,28 +117,16 @@ If a DSH candidate fails its health check, the manager restores and verifies the
 
 ## Installed paths
 
-The manager owns these paths under your home directory. In the table, `release_id` represents a generated versioned directory name.
+The manager owns these paths under your home directory. The manager root holds the runner template (`libexec/dsh-service-run`), versioned releases (`releases/release_id` with its package tree, `manifest.env`, `run`, and `.complete` marker), the `current` and `previous` release links, the activation journal (`activation.env`), the operation lock (`.lock`), and the service workspace (`workspace`).
 
-| Purpose | Path |
-| --- | --- |
-| Command | `~/.local/bin/dsh-service` |
-| Manager root | `~/Library/Application Support/dsh-service` |
-| Runner template | `~/Library/Application Support/dsh-service/libexec/dsh-service-run` |
-| Versioned releases | `~/Library/Application Support/dsh-service/releases` |
-| Release directory | `~/Library/Application Support/dsh-service/releases/release_id` |
-| Release package tree | `~/Library/Application Support/dsh-service/releases/release_id/node_modules/` |
-| Release manifest | `~/Library/Application Support/dsh-service/releases/release_id/manifest.env` |
-| Release runner | `~/Library/Application Support/dsh-service/releases/release_id/run` |
-| Release completion marker | `~/Library/Application Support/dsh-service/releases/release_id/.complete` |
-| Active release link | `~/Library/Application Support/dsh-service/current` |
-| Previous release link | `~/Library/Application Support/dsh-service/previous` |
-| Activation journal | `~/Library/Application Support/dsh-service/activation.env` |
-| Operation lock | `~/Library/Application Support/dsh-service/.lock` |
-| Service workspace | `~/Library/Application Support/dsh-service/workspace` |
-| LaunchAgent plist | `~/Library/LaunchAgents/dev.dsh-service.web.plist` |
-| Log directory | `~/Library/Logs/dsh-service` |
-| Standard output | `~/Library/Logs/dsh-service/stdout.log` |
-| Standard error | `~/Library/Logs/dsh-service/stderr.log` |
+| Purpose | macOS | Linux |
+| --- | --- | --- |
+| Command | `~/.local/bin/dsh-service` | `~/.local/bin/dsh-service` |
+| Manager root | `~/Library/Application Support/dsh-service` | `${XDG_DATA_HOME:-~/.local/share}/dsh-service` |
+| Service definition | `~/Library/LaunchAgents/dev.dsh-service.web.plist` | `${XDG_CONFIG_HOME:-~/.config}/systemd/user/dsh-service.service` |
+| Log directory | `~/Library/Logs/dsh-service` | `${XDG_STATE_HOME:-~/.local/state}/dsh-service` |
+| Standard output | `.../stdout.log` under the log directory | same |
+| Standard error | `.../stderr.log` under the log directory | same |
 
 DSH owns its user state in `~/.dsh`; the manager does not. `dsh-service uninstall` preserves that directory and all of its contents.
 
@@ -149,19 +146,41 @@ dsh-service logs
 
 If status reports `unloaded`, run `dsh-service start`. If it reports `unhealthy` or `starting`, inspect both logs before restarting. If it reports `interrupted`, run `dsh-service restart` so the manager can recover the recorded activation. If it reports `conflict`, inspect port `3080` before any service change.
 
-The manager refuses to start or restart when another process owns port `3080`. Identify the listener without stopping it:
+The manager refuses to start or restart when another process owns port `3080`. Identify the listener without stopping it — on macOS:
 
 ```bash
 /usr/sbin/lsof -nP -iTCP:3080 -sTCP:LISTEN
+```
+
+On Linux:
+
+```bash
+ss -tlnp 'sport = :3080'
 ```
 
 Stop that process only if you own it and intend to release the port. The managed service always binds to `127.0.0.1:3080`; this release has no port setting.
 
 If the recorded Node.js executable no longer exists, restore a supported Node.js version and run `./install.sh` from a trusted checkout. The new install records the current absolute Node.js path.
 
+## Linux headless and server use
+
+A systemd user unit normally stops when your last login session ends. For an always-on machine (a home server or NAS), enable lingering so the service starts at boot and survives logout:
+
+```bash
+loginctl enable-linger $USER
+```
+
+`dsh-service install` prints a reminder when lingering is off. The service still binds only to `127.0.0.1:3080`; the official DSH CLI rejects non-loopback binds. For remote access, tunnel instead of exposing the port:
+
+```bash
+ssh -L 3080:127.0.0.1:3080 your-server
+```
+
+Then open `http://127.0.0.1:3080` on the local machine. Overlay networks such as Tailscale that forward to loopback work the same way.
+
 ## Security boundary
 
-DSH can execute code and shell commands with your macOS user permissions. Use it only with trusted projects and instructions, and review commands before granting access to sensitive data.
+DSH can execute code and shell commands with your user permissions. Use it only with trusted projects and instructions, and review commands before granting access to sensitive data.
 
 Install and update fetch `@deepseek-ai/dsh` and its transitive dependencies from npm. npm may execute package lifecycle scripts with your user permissions. Review the package source, publisher, and dependency risk before installation.
 
@@ -169,15 +188,17 @@ The service listens only on the Internet Protocol version 4 (IPv4) loopback addr
 
 ## Tested status and compatibility limits
 
-The only current backend is a per-user macOS LaunchAgent. Automated Bash syntax checks and isolated tests ran on macOS 26.5.2 (build 25F84), arm64. The guarded live smoke completed on that host with DSH `0.1.0-rc.6`. It verified install, status, restart, same-version update, stop, start, and uninstall. It also verified removal of every manager-owned path and preservation of the existing `~/.dsh` directory.
+The backends are a per-user macOS LaunchAgent and a Linux systemd user unit. Automated Bash syntax checks and isolated tests run on both macOS and Ubuntu. The macOS guarded live smoke completed on macOS 26.5.2 (build 25F84), arm64, with DSH `0.1.0-rc.6`. The Linux guarded live smoke completed on Ubuntu 24.04 (arm64, systemd 255, OrbStack virtual machine) with the same DSH release. Both verified install, status, restart, same-version update, stop, start, and uninstall, plus removal of every manager-owned path and preservation of the existing `~/.dsh` directory. The Linux smoke additionally verified boot-time start with lingering enabled and transactional rollback of a failed install.
+
+On Linux, installing `@deepseek-ai/dsh` compiles native modules (`node-pty`), so `npm` needs a C/C++ toolchain such as the `build-essential` package and `python3`.
 
 This evidence is not a general compatibility guarantee. Compatibility across alpha releases is not guaranteed. Migration or clean-reinstall instructions will be documented when required.
 
 ## Feedback and contributions
 
-Use [GitHub Issues](https://github.com/TristanXS/dsh-service/issues) for reproducible bugs. Include your macOS version, architecture, Node.js version, `dsh-service status`, and redacted log excerpts. Do not publish API keys or the contents of `~/.dsh/.credentials.yaml`.
+Use [GitHub Issues](https://github.com/TristanXS/dsh-service/issues) for reproducible bugs. Include your operating system and version, architecture, Node.js version, `dsh-service status`, and redacted log excerpts. Do not publish API keys or the contents of `~/.dsh/.credentials.yaml`.
 
-Use [GitHub Discussions](https://github.com/TristanXS/dsh-service/discussions) for questions, ideas, and future Linux or Windows platform requests. Contributions should preserve the security and compatibility boundaries described above.
+Use [GitHub Discussions](https://github.com/TristanXS/dsh-service/discussions) for questions, ideas, and future Windows platform requests. Contributions should preserve the security and compatibility boundaries described above.
 
 ## License
 
